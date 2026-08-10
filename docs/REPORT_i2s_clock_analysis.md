@@ -138,4 +138,5 @@ I2SDIV уже проинициализированного тракта оста
 ## Публикация
 
 - Отчёт: `docs/REPORT_i2s_clock_analysis.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`56103c087c0539e32ed55fa237c55f9756ae534a`** · Push: OK (`efe7147..56103c0 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
