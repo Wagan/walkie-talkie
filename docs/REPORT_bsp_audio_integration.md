@@ -219,4 +219,5 @@ USB_HOST/USB_OTG_FS/SPI1/I2S2/I2S3/I2C1 и перегенерация): изме
 в репозиторий не входит (игнорируется).
 
 - Отчёт: `docs/REPORT_bsp_audio_integration.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`df71bd1aa553ff59fdb95d350debf0bb20c9bf23`** · Push: OK (`bd92490..df71bd1 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
