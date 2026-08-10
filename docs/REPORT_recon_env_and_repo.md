@@ -214,6 +214,14 @@
 
 ## Часть B. Публикация (заполняется по факту)
 
-- Хеш коммита: `<PLACEHOLDER — заполняется в B6>`
-- Проверка B6.4 (`git ls-files docs/` не содержит файлов из reference):
-  `<PLACEHOLDER — заполняется в B6>`
+- Ветка: `main`. Remote `origin` = `git@github.com:Wagan/walkie-talkie.git`.
+- Закоммичены ровно 4 файла: `.gitignore`, `README.md`,
+  `docs/TASK_recon_env_and_repo.md`, `docs/REPORT_recon_env_and_repo.md`.
+- Хеш первого коммита (push OK, `main -> main`, exit 0):
+  **`d58ecb0c9f881a0ef1948daa46dc1d964356a101`**
+- Проверка B6.4 (`git ls-files docs/`): в индексе только
+  `docs/REPORT_recon_env_and_repo.md` и `docs/TASK_recon_env_and_repo.md`.
+  Ни одного файла из `docs/reference/` в выводе нет — **справочная документация не утекла (OK)**.
+
+> Примечание: этот отчёт с заполненной секцией B зафиксирован отдельным вторым коммитом
+> (хеш первого коммита выше указывает на состояние на момент публикации по B6).
