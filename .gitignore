@@ -1,0 +1,22 @@
+# Сборочные артефакты STM32CubeIDE
+Debug/
+Release/
+*.o
+*.d
+*.su
+*.map
+*.list
+*.elf
+*.bin
+*.hex
+
+# Служебные файлы CubeIDE, которые постоянно меняются сами
+.settings/language.settings.xml
+.settings/stm32cubeide.project.prefs
+.metadata/
+
+# Справочная документация — в репозиторий не идёт
+docs/reference/
+
+# Claude Code
+.claude/settings.local.json
