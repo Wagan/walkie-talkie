@@ -18,5 +18,8 @@ Release/
 # Справочная документация — в репозиторий не идёт
 docs/reference/
 
+# Резервная копия .cproject перед интеграцией BSP — в репозиторий не идёт
+.cproject.bak.before-bsp
+
 # Claude Code
 .claude/settings.local.json

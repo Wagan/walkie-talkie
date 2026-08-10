@@ -41,7 +41,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+/* Audio BSP I2S handles (defined in Drivers/BSP/STM32F411E-Discovery/stm32f411e_discovery_audio.c) */
+extern I2S_HandleTypeDef hAudioInI2s;  /* microphone input  (I2S2, DMA1_Stream3 Rx) */
+extern I2S_HandleTypeDef hAudioOutI2s; /* codec output      (I2S3, DMA1_Stream7 Tx) */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -52,10 +54,34 @@
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+  * @brief  This function handles DMA1 stream3 global interrupt.
+  * @note   Audio IN (microphone) receive path used by the board BSP.
+  *         In the ST reference example this handler is named via the macro
+  *         I2S2_IRQHandler (= DMA1_Stream3_IRQHandler) from
+  *         stm32f411e_discovery_audio.h; here the canonical CMSIS name is used.
+  */
+void DMA1_Stream3_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(hAudioInI2s.hdmarx);
+}
+
+/**
+  * @brief  This function handles DMA1 stream7 global interrupt.
+  * @note   Audio OUT (codec) transmit path used by the board BSP.
+  *         In the ST reference example this handler is named via the macro
+  *         I2S3_IRQHandler (= DMA1_Stream7_IRQHandler) from
+  *         stm32f411e_discovery_audio.h; here the canonical CMSIS name is used.
+  */
+void DMA1_Stream7_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(hAudioOutI2s.hdmatx);
+}
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern HCD_HandleTypeDef hhcd_USB_OTG_FS;
+
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -197,20 +223,6 @@ void SysTick_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32f4xx.s).                    */
 /******************************************************************************/
-
-/**
-  * @brief This function handles USB On The Go FS global interrupt.
-  */
-void OTG_FS_IRQHandler(void)
-{
-  /* USER CODE BEGIN OTG_FS_IRQn 0 */
-
-  /* USER CODE END OTG_FS_IRQn 0 */
-  HAL_HCD_IRQHandler(&hhcd_USB_OTG_FS);
-  /* USER CODE BEGIN OTG_FS_IRQn 1 */
-
-  /* USER CODE END OTG_FS_IRQn 1 */
-}
 
 /* USER CODE BEGIN 1 */
 

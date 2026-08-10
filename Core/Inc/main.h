@@ -59,8 +59,6 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define DATA_Ready_Pin GPIO_PIN_2
 #define DATA_Ready_GPIO_Port GPIOE
-#define CS_I2C_SPI_Pin GPIO_PIN_3
-#define CS_I2C_SPI_GPIO_Port GPIOE
 #define INT1_Pin GPIO_PIN_4
 #define INT1_GPIO_Port GPIOE
 #define INT2_Pin GPIO_PIN_5
@@ -73,8 +71,6 @@ void Error_Handler(void);
 #define PH0_OSC_IN_GPIO_Port GPIOH
 #define PH1_OSC_OUT_Pin GPIO_PIN_1
 #define PH1_OSC_OUT_GPIO_Port GPIOH
-#define OTG_FS_PowerSwitchOn_Pin GPIO_PIN_0
-#define OTG_FS_PowerSwitchOn_GPIO_Port GPIOC
 #define PDM_OUT_Pin GPIO_PIN_3
 #define PDM_OUT_GPIO_Port GPIOC
 #define I2S3_WS_Pin GPIO_PIN_4
@@ -115,16 +111,12 @@ void Error_Handler(void);
 #define I2S3_SD_GPIO_Port GPIOC
 #define Audio_RST_Pin GPIO_PIN_4
 #define Audio_RST_GPIO_Port GPIOD
-#define OTG_FS_OverCurrent_Pin GPIO_PIN_5
-#define OTG_FS_OverCurrent_GPIO_Port GPIOD
 #define SWO_Pin GPIO_PIN_3
 #define SWO_GPIO_Port GPIOB
 #define Audio_SCL_Pin GPIO_PIN_6
 #define Audio_SCL_GPIO_Port GPIOB
 #define Audio_SDA_Pin GPIO_PIN_9
 #define Audio_SDA_GPIO_Port GPIOB
-#define MEMS_INT2_Pin GPIO_PIN_1
-#define MEMS_INT2_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
 

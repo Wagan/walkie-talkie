@@ -55,9 +55,9 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
-void OTG_FS_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void DMA1_Stream3_IRQHandler(void); /* audio IN  (microphone, I2S2 Rx) */
+void DMA1_Stream7_IRQHandler(void); /* audio OUT (codec, I2S3 Tx) */
 /* USER CODE END EFP */
 
 #ifdef __cplusplus
