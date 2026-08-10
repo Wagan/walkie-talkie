@@ -29,7 +29,10 @@
 /* Include audio component Driver */
 #include "../Components/cs43l22/cs43l22.h"
 #include "stm32f411e_discovery.h"
-#include "../../../Middlewares/ST/STM32_Audio/Addons/PDM/Inc/pdm2pcm_glo.h"
+/* Путь изменён относительно оригинала ST: каталог Middlewares полностью вычищается при
+   генерации кода из .ioc (CubeMX считает его своей зоной), поэтому библиотека PDM2PCM
+   перенесена в ThirdParty/PDM2PCM/Inc и подключается по имени файла через путь поиска (-I). */
+#include "pdm2pcm_glo.h"
 
 /** @addtogroup BSP
   * @{
