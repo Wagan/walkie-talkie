@@ -125,4 +125,6 @@
 перечислены выше пофайлово; резервная копия `.cproject.bak.before-pdm-relocate` игнорируется.
 
 - Отчёт: `docs/REPORT_pdm_relocate.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`5ec3ca4e8a8f3da834df12ee7e7c6838f66c7e7e`** · Push: OK (`43a36fd..5ec3ca4 main -> main`, exit 0).
+- Пост-проверка: `git ls-files | grep Middlewares` → 0 файлов; `ThirdParty/PDM2PCM/{Inc,Lib}` в индексе.
+- (Хеш вписан вторым коммитом.)
