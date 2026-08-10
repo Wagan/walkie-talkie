@@ -206,4 +206,5 @@ const uint32_t I2SPLLR[8] = {5,    4,     4,     4,     4,     6,     3,     1};
 ## 7. Публикация
 
 - Отчёт: `docs/REPORT_st_audio_example.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`ad30dc1cb532518a885165fb17e3b0e084f7da90`** · Push: OK (`e3051a6..ad30dc1 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом — стандартная процедура фиксации отчёта.)
