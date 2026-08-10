@@ -331,3 +331,71 @@ A5 (примеры):
 предварительно распаковать/импортировать в Repository (например, через CubeIDE
 Embedded Software Packages или распаковкой zip в каталог Repository) — это отдельное
 действие, вне текущего задания.
+
+---
+
+# RECON: Repository после установки (запрос владельца, 2026-08-10)
+
+Пакет установлен штатным механизмом CubeIDE; проверка только на чтение.
+
+## 1. Содержимое Repository
+
+Фактический путь Repository: `C:\Users\user\STM32Cube\Repository` (тот же, что и раньше).
+Каталоги верхнего уровня с размерами:
+
+| Размер | Каталог |
+|---:|---|
+| 1679,5 МБ | `STM32Cube_FW_F4_V1.28.0` |
+
+Файлы верхнего уровня: `en.stm32h5cubemxbanner.png` (81 284 байт) — присутствовал и до
+установки (LastWriteTime 2026-08-10 10:33:07, раньше самого пакета).
+
+## 2. Пакет F4: имя каталога и проверка путей
+
+- Точное имя каталога: **`STM32Cube_FW_F4_V1.28.0`**.
+- Проверка требуемых путей внутри (наличие подтверждено файлами):
+
+  | Есть/Нет | Путь (относительно каталога пакета) |
+  |---|---|
+  | **ЕСТЬ** | `Drivers/BSP/STM32F411E-Discovery` |
+  | **ЕСТЬ** | `Drivers/BSP/Components/cs43l22` |
+  | **ЕСТЬ** | `Middlewares/ST/STM32_Audio/Addons/PDM/Lib` (библиотека PDM2PCM) |
+  | **ЕСТЬ** | `Projects/STM32F411E-Discovery/Applications/Audio/Audio_playback_and_record` |
+  | **ЕСТЬ** | …/Audio_playback_and_record/`STM32CubeIDE` (проект CubeIDE) |
+
+  Подтверждающие файлы:
+  - BSP платы: `stm32f411e_discovery.c/.h`, `stm32f411e_discovery_audio.c/.h`,
+    `..._accelerometer.c/.h`, `..._gyroscope.c/.h`, `Release_Notes.html`, `LICENSE.txt`,
+    `STM32F411E-Discovery_BSP_User_Manual.chm`.
+  - cs43l22: `cs43l22.c`, `cs43l22.h`, `Release_Notes.html`, `LICENSE.txt`.
+  - PDM2PCM: библиотека лежит по полному пути
+    `C:\Users\user\STM32Cube\Repository\STM32Cube_FW_F4_V1.28.0\Middlewares\ST\STM32_Audio\Addons\PDM\Lib`
+    (заголовок API — `.../Addons/PDM/Inc/pdm2pcm_glo.h`, тоже на месте).
+    Варианты под наше ядро CM4 (GCC): `libPDMFilter_CM4_GCC_wc16.a`, `wc16_soft`,
+    `wc16_softfp`, `wc32`, `wc32_soft`, `wc32_softfp` — все присутствуют.
+  - Проект CubeIDE аудио-примера: `.project`, `.cproject`, `STM32F411VEHX_FLASH.ld`, плюс
+    `Application\Startup\startup_stm32f411vehx.s`, `Application\User\syscalls.c`,
+    `Application\User\sysmem.c` (стартап и syscalls лежат в подпапках `Application\`).
+
+## 3. Установленная версия и источник
+
+Установлена версия **1.28.0** (не 1.28.3). Видно из файла
+`C:\Users\user\STM32Cube\Repository\STM32Cube_FW_F4_V1.28.0\package.xml`:
+`<PackDescription Release="FW.F4.1.28.0">`. Имя каталога согласуется с этим.
+
+Примечание: каталог CubeFinder в CubeIDE знает и более свежую F4 **1.28.3** (см. раздел
+«УТОЧНЕНИЕ A2–A5»), но установлена и распакована именно **1.28.0**.
+
+## 4. Что ещё появилось в Repository помимо F4
+
+В самом каталоге Repository (`C:\Users\user\STM32Cube\Repository`) на верхнем уровне
+кроме `STM32Cube_FW_F4_V1.28.0` **ничего нового не появилось**: единственный прочий
+элемент — файл `en.stm32h5cubemxbanner.png`, который был там ещё до установки (его
+LastWriteTime 10:33:07 предшествует времени пакета 11:46:07). Других каталогов пакетов
+(CMSIS-паков, X-CUBE, патчей и т.п.) в Repository нет.
+
+Расхождение с ожиданием: владелец отметил, что после Refresh «доустановилось что-то
+ещё» — но **в каталоге Repository** это не отражено, там только пакет F4. Если Refresh
+что-то доустановил, оно легло не в этот Repository (возможно, во внутренний каталог
+паков самой CubeIDE в её установке) — это вне указанного в задании пути и здесь не
+проверялось.
