@@ -1,7 +1,10 @@
 /**
   ******************************************************************************
   * @file    App/Src/audio_loopback.c
+  * @author  Wagan Sarukhanov
   * @brief   Демо loopback «микрофон MP45DT02 → кодек CS43L22», Fs = 16 кГц.
+  *
+  * Copyright (c) 1991-2026 NCPR LLC (Flexlab). All rights reserved.
   ******************************************************************************
   * ТРАКТ ДАННЫХ (по эталону Audio_playback_and_record, пересчёт под Fs = 16000):
   *

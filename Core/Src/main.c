@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "audio_loopback.h"
+#include "trace_swo.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,7 +43,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* Метка времени и счётчик для секундного heartbeat по SWO (только основной цикл). */
+static uint32_t swoLastTick = 0U;
+static uint32_t swoSeq = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -50,7 +53,7 @@ void SystemClock_Config(void);
 void PeriphCommonClock_Config(void);
 static void MX_GPIO_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void SWO_EmitHeartbeat(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -103,6 +106,13 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     AudioLoopback_Process();
+    /* Раз в ~1 c выводим короткий heartbeat по SWO. Печать только из основного цикла;
+       из обработчиков прерываний ничего не печатаем (они срабатывают ~1000 раз/с). */
+    if ((uint32_t)(HAL_GetTick() - swoLastTick) >= 1000U)
+    {
+      swoLastTick = HAL_GetTick();
+      SWO_EmitHeartbeat();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -125,7 +135,7 @@ void SystemClock_Config(void)
   * in the RCC_OscInitTypeDef structure.
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -241,7 +251,38 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief  Выводит по SWO строку "SWO <n>\r\n" (n — секундный счётчик).
+  * @note   Число форматируется вручную, без printf (Часть 1 — только вывод строки).
+  */
+static void SWO_EmitHeartbeat(void)
+{
+  char buf[20];
+  char rev[10];
+  uint32_t n = swoSeq++;
+  uint8_t i = 0U;
+  uint8_t k = 0U;
+  uint8_t j;
 
+  buf[i++] = 'S';
+  buf[i++] = 'W';
+  buf[i++] = 'O';
+  buf[i++] = ' ';
+  do
+  {
+    rev[k++] = (char)('0' + (n % 10U));
+    n /= 10U;
+  } while (n != 0U);
+  for (j = k; j > 0U; j--)
+  {
+    buf[i++] = rev[j - 1U];
+  }
+  buf[i++] = '\r';
+  buf[i++] = '\n';
+  buf[i] = '\0';
+
+  Trace_SWO_PutString(buf);
+}
 /* USER CODE END 4 */
 
 /**
