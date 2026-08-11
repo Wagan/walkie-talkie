@@ -43,3 +43,18 @@ void Trace_SWO_PutString(const char *s)
     s++;
   }
 }
+
+/**
+  * @brief  Перенаправление printf в SWO без правки syscalls.c.
+  * @note   Сгенерированный Core/Src/syscalls.c содержит слабый _write(), который в цикле
+  *         вызывает __io_putchar(), объявленную там как `extern __attribute__((weak))`
+  *         без сильного определения. Дав здесь СИЛЬНУЮ __io_putchar(), мы штатно
+  *         перенаправляем printf в ITM (порт 0), не изменяя syscalls.c.
+  *         При отсутствии отладчика ITM_SendChar() возвращает сразу (см. выше) — printf
+  *         не блокирует ядро.
+  */
+int __io_putchar(int ch)
+{
+  (void)ITM_SendChar((uint32_t)(uint8_t)ch);
+  return ch;
+}

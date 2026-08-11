@@ -131,3 +131,91 @@ UM1842 не подтверждает работоспособность SWO им
 *Часть 2 (printf через syscalls.c, уровни логирования, диагностика демо, вопрос по
 walkie-talkie.launch, раздел README) — по этому же отчёту, отдельным разделом, только после
 подтверждения владельца.*
+
+---
+
+# Часть 2 (E, F, G, H) — после подтверждения владельца
+
+Часть 1 подтверждена опытом (строки heartbeat дошли до SWV ITM Data Console). Рабочие
+значения, сообщённые владельцем: **Core Clock 96 МГц, Clock Prescaler 48, SWO Clock 2000 кГц,
+ITM порт 0**. Правила соблюдены: syscalls.c/HAL/CMSIS/Drivers/BSP не изменялись; правки в
+`main.c` отсутствуют (весь новый код — в `App/`); проект не собирался. Во все новые/изменённые
+наши исходники добавлена копирайт-шапка **© 1991-2026 NCPR LLC (Flexlab)**, автор
+**Wagan Sarukhanov**.
+
+## E. Полноценный вывод (printf + уровни)
+
+**E1. printf без правки syscalls.c.** По фактическому `Core/Src/syscalls.c`: `_write()` объявлен
+`__attribute__((weak))` и в цикле вызывает `__io_putchar()`, которая там объявлена как
+`extern int __io_putchar(int) __attribute__((weak))` **без сильного определения**. Штатный
+способ перенаправить `printf` — дать свою **сильную** `__io_putchar()`. Она добавлена в
+`App/Src/trace_swo.c`:
+```c
+int __io_putchar(int ch) { (void)ITM_SendChar((uint32_t)(uint8_t)ch); return ch; }
+```
+Теперь цепочка `printf → _write → __io_putchar → ITM_SendChar → SWO`. Сам `syscalls.c` не
+тронут. Без отладчика `ITM_SendChar()` возвращает сразу — `printf` не блокирует ядро.
+
+**E2. Интерфейс логирования с уровнями** — `App/Inc/trace_log.h` (header-only):
+```c
+#define TRACE_LOG(fmt, ...)  printf("[I] " fmt "\r\n", ##__VA_ARGS__)   /* обычное сообщение */
+#define TRACE_ERR(fmt, ...)  printf("[E] " fmt "\r\n", ##__VA_ARGS__)   /* сообщение об ошибке */
+```
+Перевод строки добавляется сам; `##__VA_ARGS__` — расширение GCC (наш тулчейн). В шапке —
+предупреждение: не вызывать из ISR (printf медленный).
+
+## F. Диагностика демо (`App/Src/audio_loopback.c`, печать только вне ISR)
+
+1. **При инициализации** — одно сообщение с фактическими параметрами (main-контекст):
+   `TRACE_LOG("audio init OK: Fs=%u Hz, in ch=%u, pdmBuf=%u words, pcm slot=%u words x2, codec=OK mic=OK", ...)`
+   → `Fs=16000, ch=1, pdmBuf=128, pcm slot=32`. Печатается после успешных `BSP_AUDIO_OUT_Init` и
+   `BSP_AUDIO_IN_Init` (их результат = OK и есть суть сообщения).
+2. **Статус в основном цикле, не чаще 1 Гц** — `AudioLoopback_Process()` темпируется по
+   `HAL_GetTick()` и печатает `TRACE_LOG("status: blocks=%u err=%u", delta, loopbackError)`, где
+   `delta = blockCount - предыдущий_снимок`. **Счётчик `blockCount` инкрементируется в ISR**
+   (`Loopback_ConvertBlock`), **читается и печатается в основном цикле**. Разделяемые переменные
+   объявлены `volatile` (`blockCount`, `loopbackError`); снимок 32-битного счётчика атомарен на M4.
+3. **При ошибке** — сообщение с указанием функции BSP: каждое место ошибки выставляет
+   `lbErrWho` (имя функции: `BSP_AUDIO_OUT_Init` / `BSP_AUDIO_IN_Init` / `BSP_AUDIO_OUT_Play` /
+   `BSP_AUDIO_IN_Record` / `BSP_AUDIO_IN_Error_Callback` / `BSP_AUDIO_OUT_Error_CallBack`), а
+   `Process()` один раз печатает `TRACE_ERR("audio error from %s", lbErrWho)`. Колбэки ошибок —
+   в ISR, поэтому там только фиксируется имя и флаг, а печать вынесена в основной цикл.
+
+Проверено: вызовов `TRACE_*`/`printf` внутри обработчиков прерываний нет (только в `Init` и
+`Process`).
+
+## G. walkie-talkie.launch — анализ пути журнала (решение за владельцем)
+
+Текущий `.launch` уже содержит рабочие SWV-настройки (`enable_swv=true`, `swv_trace_hclk=96000000`,
+`itmports=1:0:…` → включён ITM порт 0). Единственная **машинно-специфичная** строка —
+`com.st.stm32cube.ide.mcu.debug.stlink.log_file` = `C:\Users\user\…\Debug\st-link_gdbserver_log.txt`.
+
+Факт: **логирование выключено** (`com.st.stm32cube.ide.mcu.debug.stlink.enable_logging = false`),
+поэтому этот путь **сейчас не используется** и на работу конфигурации не влияет.
+
+Как сделать путь переносимым (в IDE: Debug Configurations → вкладка **Debugger** → поле
+**[Log to file]**):
+- **Проще всего — очистить путь** (пустое значение). Логирование выключено, так что пустой путь
+  ничего не ломает; при желании включить лог позже путь задаётся заново.
+- **Либо workspace-относительный** через переменную Eclipse, напр.
+  `${workspace_loc:/walkie-talkie}/Debug/st-link_gdbserver_log.txt` — типовой механизм Eclipse-переменных.
+  (UM2609 явно поддержку переменной для этого поля не описывает — стоит проверить в IDE.)
+
+После устранения абсолютного пути `.launch` (уже с готовыми SWV-настройками) можно убрать из
+`.gitignore` и закоммитить — тогда студент получит и рабочую конфигурацию SWV. **Решение о правке
+и коммите оставлено владельцу**: сам файл я не менял и в коммит не добавлял (остаётся игнорируемым).
+
+## H. README
+
+В `README.md` добавлен раздел **«Диагностика по SWO (SWV ITM Data Console)»**: что такое SWO на
+этой плате (PB3 через SB15; ST-LINK/V2 «только SWD», CN2 Reserved — подтверждено опытом),
+почему нет VCP (у встроенного ST-LINK/V2 его нет), и пошаговая настройка приёма с **проверенными
+значениями** (Core Clock 96 МГц, Prescaler 48, SWO Clock 2000 кГц = 96000/48, ITM порт 0).
+Отдельно выделено предупреждение: в диалоге **Configure Trace**, строка **Enable port**,
+порты нумеруются **справа налево — порт 0 самый правый** чекбокс.
+
+## Публикация Части 2
+
+- Созданы: `App/Inc/trace_log.h`. Изменены: `App/Src/trace_swo.c` (+`__io_putchar`),
+  `App/Src/audio_loopback.c` (диагностика), `README.md`. `main.c` не менялся.
+- Хеш коммита Части 2: `<PLACEHOLDER-2>` · Push: `<PLACEHOLDER-2>`

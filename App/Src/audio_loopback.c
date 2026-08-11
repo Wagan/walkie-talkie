@@ -47,6 +47,7 @@
 #include "audio_loopback.h"
 #include "stm32f411e_discovery_audio.h"   /* BSP аудио + константы (INTERNAL_BUFF_SIZE, ...) */
 #include "stm32f411e_discovery.h"         /* светодиоды BSP_LED_* */
+#include "trace_log.h"                    /* TRACE_LOG / TRACE_ERR (печать только вне ISR) */
 #include <string.h>
 
 /* Частота дискретизации демо и умеренная громкость кодека (0..100). */
@@ -64,9 +65,18 @@ static volatile uint8_t pcmFillIdx = 0U;
 /* Последний готовый слот для кодека (публикуется микрофонным колбэком). */
 static uint16_t * volatile pPcmReady = NULL;
 
-/* Диагностика. */
+/* Диагностика. Переменные, меняющиеся в прерывании, объявлены volatile.
+   loopbackError и blockCount пишутся в ISR-колбэках, читаются в основном цикле.
+   lbErrWho — имя функции BSP, вернувшей ошибку (указатель на строковый литерал;
+   запись/чтение выровненного указателя атомарны на Cortex-M4). */
 static volatile uint8_t  loopbackError = 0U;
 static volatile uint32_t blockCount    = 0U;
+static const char * volatile lbErrWho  = NULL;
+
+/* Только основной цикл (не ISR): темп статуса ~1 Гц, снимок счётчиков, флаг доклада. */
+static uint32_t lbStatusTick   = 0U;
+static uint32_t lbBlocksShown  = 0U;
+static uint8_t  lbErrReported  = 0U;
 
 /**
   * @brief  Преобразовать одну половину PDM-буфера в PCM и опубликовать для кодека.
@@ -102,6 +112,9 @@ uint8_t AudioLoopback_Init(void)
   pPcmReady     = pcmBuf[0];
   blockCount    = 0U;
   loopbackError = 0U;
+  lbErrWho      = NULL;
+  lbErrReported = 0U;
+  lbBlocksShown = 0U;
 
   /* ПОРЯДОК ИНИЦИАЛИЗАЦИИ (обоснование по исходнику BSP):
      оба BSP_AUDIO_*_ClockConfig перекрыты и ставят один и тот же PLLI2S (86 МГц),
@@ -110,6 +123,7 @@ uint8_t AudioLoopback_Init(void)
      BSP_AUDIO_IN_Init настраивает I2S2 и PDM-фильтр (и включает тактирование CRC). */
   if (BSP_AUDIO_OUT_Init(OUTPUT_DEVICE_HEADPHONE, LOOPBACK_VOLUME, LOOPBACK_AUDIO_FREQ) != AUDIO_OK)
   {
+    lbErrWho = "BSP_AUDIO_OUT_Init";
     loopbackError = 1U;
     BSP_LED_On(LED5);
     return AUDIO_ERROR;
@@ -118,6 +132,7 @@ uint8_t AudioLoopback_Init(void)
   if (BSP_AUDIO_IN_Init(LOOPBACK_AUDIO_FREQ, DEFAULT_AUDIO_IN_BIT_RESOLUTION,
                         DEFAULT_AUDIO_IN_CHANNEL_NBR) != AUDIO_OK)
   {
+    lbErrWho = "BSP_AUDIO_IN_Init";
     loopbackError = 1U;
     BSP_LED_On(LED5);
     return AUDIO_ERROR;
@@ -128,6 +143,7 @@ uint8_t AudioLoopback_Init(void)
      Размер BSP_AUDIO_OUT_Play — в БАЙТАХ (внутри делится на AUDIODATA_SIZE). */
   if (BSP_AUDIO_OUT_Play(pcmBuf[0], (uint32_t)(PCM_OUT_SIZE * 2 * AUDIODATA_SIZE)) != AUDIO_OK)
   {
+    lbErrWho = "BSP_AUDIO_OUT_Play";
     loopbackError = 1U;
     BSP_LED_On(LED5);
     return AUDIO_ERROR;
@@ -137,21 +153,43 @@ uint8_t AudioLoopback_Init(void)
      Размер BSP_AUDIO_IN_Record — в СЛОВАХ (u16), передаётся в HAL_I2S_Receive_DMA. */
   if (BSP_AUDIO_IN_Record(pdmBuf, (uint32_t)INTERNAL_BUFF_SIZE) != AUDIO_OK)
   {
+    lbErrWho = "BSP_AUDIO_IN_Record";
     loopbackError = 1U;
     BSP_LED_On(LED5);
     return AUDIO_ERROR;
   }
 
   BSP_LED_On(LED4);   /* зелёный: инициализация прошла успешно */
+
+  /* Одно сообщение при инициализации с фактическими параметрами (main-контекст, не ISR). */
+  TRACE_LOG("audio init OK: Fs=%u Hz, in ch=%u, pdmBuf=%u words, pcm slot=%u words x2, codec=OK mic=OK",
+            (unsigned)LOOPBACK_AUDIO_FREQ, (unsigned)DEFAULT_AUDIO_IN_CHANNEL_NBR,
+            (unsigned)INTERNAL_BUFF_SIZE, (unsigned)(PCM_OUT_SIZE * 2));
   return AUDIO_OK;
 }
 
 void AudioLoopback_Process(void)
 {
-  /* Вся обработка звука — в прерываниях DMA. Здесь только поддерживаем индикацию ошибки. */
+  /* Вся обработка звука — в прерываниях DMA. Здесь (основной цикл, не ISR) печатаем
+     статус не чаще раза в секунду и один раз докладываем об ошибке. */
   if (loopbackError != 0U)
   {
     BSP_LED_On(LED5);
+    if (lbErrReported == 0U)
+    {
+      const char *who = lbErrWho;                 /* снимок указателя (атомарно на M4) */
+      TRACE_ERR("audio error from %s", (who != NULL) ? who : "(unknown)");
+      lbErrReported = 1U;
+    }
+  }
+
+  if ((uint32_t)(HAL_GetTick() - lbStatusTick) >= 1000U)
+  {
+    uint32_t now = blockCount;                    /* снимок счётчика из ISR (атомарно) */
+    uint32_t delta = now - lbBlocksShown;
+    lbBlocksShown = now;
+    lbStatusTick  = HAL_GetTick();
+    TRACE_LOG("status: blocks=%u err=%u", (unsigned)delta, (unsigned)loopbackError);
   }
 }
 
@@ -185,12 +223,16 @@ void BSP_AUDIO_OUT_TransferComplete_CallBack(void)
    у входа Error_Callback, у выхода Error_CallBack). */
 void BSP_AUDIO_IN_Error_Callback(void)
 {
+  /* ISR: только фиксируем источник и флаг; печать — в AudioLoopback_Process (основной цикл). */
+  lbErrWho = "BSP_AUDIO_IN_Error_Callback";
   loopbackError = 1U;
   BSP_LED_On(LED5);
 }
 
 void BSP_AUDIO_OUT_Error_CallBack(void)
 {
+  /* ISR: только фиксируем источник и флаг; печать — в AudioLoopback_Process (основной цикл). */
+  lbErrWho = "BSP_AUDIO_OUT_Error_CallBack";
   loopbackError = 1U;
   BSP_LED_On(LED5);
 }
