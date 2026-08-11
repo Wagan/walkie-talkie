@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "audio_loopback.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -91,7 +91,8 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-
+  /* Запуск демо loopback: микрофон MP45DT02 -> кодек CS43L22, Fs = 16 кГц. */
+  AudioLoopback_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -101,6 +102,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    AudioLoopback_Process();
   }
   /* USER CODE END 3 */
 }

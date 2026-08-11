@@ -21,6 +21,11 @@ docs/reference/
 # Резервные копии .cproject перед правками — в репозиторий не идут
 .cproject.bak.before-bsp
 .cproject.bak.before-pdm-relocate
+.cproject.bak.before-app
+
+# Конфигурация отладки CubeIDE: содержит машинно-специфичный абсолютный путь
+# (stlink.log_file → C:\Users\user\...), поэтому в репозиторий не идёт
+walkie-talkie.launch
 
 # Claude Code
 .claude/settings.local.json
