@@ -218,4 +218,5 @@ int __io_putchar(int ch) { (void)ITM_SendChar((uint32_t)(uint8_t)ch); return ch;
 
 - Созданы: `App/Inc/trace_log.h`. Изменены: `App/Src/trace_swo.c` (+`__io_putchar`),
   `App/Src/audio_loopback.c` (диагностика), `README.md`. `main.c` не менялся.
-- Хеш коммита Части 2: `<PLACEHOLDER-2>` · Push: `<PLACEHOLDER-2>`
+- Хеш коммита Части 2: **`50e90dec07d5003d5b063ded297a9a8deedd24ca`** · Push: OK (`c85bf73..50e90de main -> main`, exit 0).
+- (Хеш вписан третьим коммитом.)
