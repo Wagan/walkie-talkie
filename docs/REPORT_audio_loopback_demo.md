@@ -177,4 +177,5 @@ I2S3) — по `stm32f411e_discovery_audio.h` (`I2S2_DMAx_STREAM=DMA1_Stream3`, 
 
 - Отчёт: `docs/REPORT_audio_loopback_demo.md`.
 - `walkie-talkie.launch` в коммит не входит (см. Задачу E).
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`50721d7f51f65634a34db11f2882f3502f404636`** · Push: OK (`abe5775..50721d7 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
