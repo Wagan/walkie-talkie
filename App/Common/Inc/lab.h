@@ -27,9 +27,9 @@ extern "C" {
 
 /* --- Защита от неверной конфигурации сборки (внятная ошибка вместо ошибок компоновки) --- */
 #if !defined(LAB_ID)
-# error "Не задан LAB_ID: активная конфигурация сборки не соответствует ни одной лабораторной. Выберите конфигурацию работы (напр. LAB00 -> LAB_ID=0)."
+# error "LAB_ID is not defined: the active build configuration does not match any lab. Select a lab build configuration (for example LAB00 -> LAB_ID=0)."
 #elif (LAB_ID != 0)
-# error "Для выбранной конфигурации сборки нет кода лабораторной (LAB_ID вне списка реализованных). Реализовано: LAB00 (LAB_ID=0). Проверьте активную конфигурацию сборки."
+# error "No lab code for the selected build configuration (LAB_ID is not in the implemented list). Implemented: LAB00 (LAB_ID=0). Check the active build configuration."
 #endif
 
 /**
