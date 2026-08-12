@@ -184,4 +184,4 @@ Windows, поэтому кириллица в тексте `#error` показы
 `Common/Src/trace_swo.c`, `Common/Src/bsp_audio_clock.c`, `Labs/stand_check.c`) —
 **UTF-8 без BOM**, единообразно по всем файлам. Разнобоя нет; менять нечего.
 
-- Хеш коммита правки: `<PLACEHOLDER-2>` · Push: `<PLACEHOLDER-2>`
+- Хеш коммита правки: **`c108632c318996b83bed3c4676fe2c5aa2022f6f`** · Push: OK (`0b3a9c2..c108632 main -> main`, exit 0).
