@@ -1,6 +1,8 @@
 # Сборочные артефакты STM32CubeIDE
 Debug/
 Release/
+# Каталоги сборки конфигураций лабораторных (LAB00/, LAB02/, ...) в корне проекта
+/LAB[0-9][0-9]/
 *.o
 *.d
 *.su
@@ -10,9 +12,8 @@ Release/
 *.bin
 *.hex
 
-# Служебные файлы CubeIDE, которые постоянно меняются сами
-.settings/language.settings.xml
-.settings/stm32cubeide.project.prefs
+# Служебные файлы CubeIDE, которые постоянно меняются сами (индексер, SFR view, язык)
+.settings/
 .metadata/
 
 # Справочная документация — в репозиторий не идёт
@@ -23,6 +24,7 @@ docs/reference/
 .cproject.bak.before-pdm-relocate
 .cproject.bak.before-app
 .cproject.bak.before-labs
+.cproject.bak.before-lab02
 
 # Конфигурация отладки CubeIDE: содержит машинно-специфичный абсолютный путь
 # (stlink.log_file → C:\Users\user\...), поэтому в репозиторий не идёт
