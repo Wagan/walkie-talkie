@@ -9,17 +9,25 @@
   ******************************************************************************
   * Компилируется только в конфигурации LAB02 (LAB_ID == 2) — весь файл обёрнут ниже.
   *
-  * ВЫБОР СПОСОБА ПРИЁМА (Задача C1): приём по ПРЕРЫВАНИЮ (HAL_UART_Receive_IT), не по DMA.
-  *  - В текущем .ioc для USART1 DMA не сконфигурирован, а править .ioc нельзя (правило 2);
-  *    поднимать DMA целиком в прикладном коде (выбор потока/канала DMA2, circular, линковка)
-  *    в обход CubeMX — хрупко. Поэтому берём приём по прерыванию: он неблокирующий, процессор
-  *    не ждёт, и на 115200 (и в нагрузочном тесте) данные не теряются.
-  *  - Приём построен на callback'ах (RxCplt/Error) — та же архитектура, что и у DMA. В LAB04,
-  *    когда по этому каналу пойдёт непрерывный аудиопоток, приём переведут на DMA circular
-  *    (включив его уже в CubeMX/.ioc), не переписывая логику пакетов и ошибок.
+  * ВЫБОР СПОСОБА ПРИЁМА: приём по DMA в КОЛЬЦЕВОЙ буфер с событием простоя линии (IDLE),
+  * через HAL_UARTEx_ReceiveToIdle_DMA — по эталону ST UART_ReceptionToIdle_CircularDMA.
+  *  - Почему не «приём на пакет» (HAL_UART_Receive_IT на LAB02_PACKET_SIZE): такой приём
+  *    фиксированной длины НЕ ИМЕЕТ точки ресинхронизации. Стоит один раз потерять/вставить
+  *    байт (например, ORE), и 30-байтовая граница пакета «съезжает» навсегда: CRC перестаёт
+  *    сходиться у ВСЕХ последующих пакетов (наблюдался симптом rx=0 при растущих fe/crc).
+  *    Разбор в TASK_uart_rx_reference это подтвердил: причина была не в настройках UART и не
+  *    в обработке ошибок, а в пакетной рассинхронизации.
+  *  - Кольцевой DMA принимает НЕПРЕРЫВНО: между пакетами нет окна, где теряются байты, а
+  *    событие IDLE (пауза на линии) естественно совпадает с границей пакета в режиме PERIODIC
+  *    и даёт точку синхронизации. Это же — целевая архитектура для LAB04 (непрерывный звук).
   *
-  * NB: печать из обработчиков прерываний ЗАПРЕЩЕНА (правило C3). В callback'ах — только
-  * счётчики (volatile) и переключение светодиодов; вся печать — из Lab_Process (main-цикл).
+  * NB: печать из обработчиков прерываний ЗАПРЕЩЕНА. В callback'ах (RxEvent/Error/TxCplt) —
+  * только разбор потока, счётчики (volatile) и переключение светодиодов; вся печать —
+  * из Lab_Process (main-цикл).
+  *
+  * NB: USART1_IRQHandler и DMA2_Stream2_IRQHandler теперь генерирует CubeMX (в Core/Src/
+  * stm32f4xx_it.c), т.к. в .ioc включены прерывание USART1 (для IDLE) и DMA2 Stream2.
+  * Поэтому здесь СВОЕГО USART1_IRQHandler больше нет и NVIC вручную не включаем.
   ******************************************************************************
   */
 
@@ -27,12 +35,12 @@
 
 #if LAB_ID == 2
 
-#include "stm32f4xx_hal.h"          /* HAL UART + HAL_GetTick */
+#include "stm32f4xx_hal.h"          /* HAL UART/UARTEx + HAL_GetTick */
 #include "stm32f411e_discovery.h"   /* светодиоды BSP_LED_* */
 #include "trace_log.h"              /* TRACE_LOG / TRACE_ERR (ASCII, только вне ISR) */
 #include <string.h>
 
-/* huart1 создан CubeMX в main.c (USART1, 115200 8N1, OVER16); берём его как внешний. */
+/* huart1 создан CubeMX в main.c (USART1, 115200 8N1, OVER16, DMA2 Stream2 RX circular). */
 extern UART_HandleTypeDef huart1;
 
 /* ================= ПАРАМЕТРЫ ОПЫТА (можно менять) ================= */
@@ -44,27 +52,20 @@ extern UART_HandleTypeDef huart1;
 #define LAB02_MODE_LOAD        1
 #define LAB02_MODE             LAB02_MODE_PERIODIC   /* <-- переключатель режима работы */
 
-/* ================= ФОРМАТ ПАКЕТА (Задача B) =================
- * Пакет фиксированного размера. Поля (все — фиксированной ширины, порядок от больших к
- * меньшим, структура __packed — поэтому раскладка байт одинакова при любой оптимизации и
- * без «дыр» выравнивания). Оба кита — один и тот же STM32F411 (little-endian), поэтому
- * сырые байты структуры идут по проводу как есть (порядок байт совпадает).
+/* ================= ФОРМАТ ПАКЕТА =================
+ * Пакет фиксированного размера. Поля фиксированной ширины, структура __packed — раскладка
+ * байт одинакова при любой оптимизации и без «дыр». Оба кита — один STM32F411 (little-endian),
+ * сырые байты структуры идут по проводу как есть.
  *
- *   seq     [u32] — порядковый номер пакета у ОТПРАВИТЕЛЯ, +1 на каждый пакет.
- *                   По разрывам в seq на приёме считаются потери.
+ *   seq     [u32] — порядковый номер пакета у ОТПРАВИТЕЛЯ, +1 на каждый пакет (по разрывам — потери).
  *   t_tx    [u32] — метка времени отправителя (HAL_GetTick, мс) в момент отправки.
- *   t_echo  [u32] — ЭХО: последняя принятая нами t_tx соседа, отражённая обратно.
- *                   Когда наша t_tx возвращается в t_echo встречного пакета, считаем
- *                   RTT = now - t_echo (часы не синхронизированы, поэтому меряем именно
- *                   round-trip, а не одностороннюю задержку). 0 — если эха ещё нет.
- *   payload [байты фикс. размера] — наполнитель (здесь — узнаваемый паттерн).
- *   crc     [u16] — контрольная сумма ПО ВСЕМУ ПАКЕТУ, КРОМЕ самого crc.
+ *   t_echo  [u32] — ЭХО: последняя принятая нами t_tx соседа, отражённая обратно (для RTT). 0 — если нет.
+ *   payload [байты] — узнаваемый наполнитель.
+ *   crc     [u16] — CRC-16/CCITT ПО ВСЕМУ ПАКЕТУ, КРОМЕ самого crc.
  *
- * ВНИМАНИЕ: это ещё не протокол. Кадрирования/поиска начала кадра/ресинхронизации НЕТ —
- * это LAB03. Здесь пакеты фиксированного размера просто «ходят и считаются»: приём
- * набирает ровно LAB02_PACKET_SIZE байт на пакет. Выравнивание держится, пока не потерян
- * байт; при потере (например, ORE на завышенной скорости) пойдут ошибки CRC — это и должно
- * быть видно студенту. */
+ * ВНИМАНИЕ: это ещё не протокол. Полноценного кадрирования с маркерами/экранированием НЕТ —
+ * это LAB03. Здесь — минимальная ресинхронизация по CRC (см. lab02_feed_byte): после сбоя
+ * приёмник сдвигается на один байт и пробует снова, пока CRC не сойдётся. */
 typedef struct __attribute__((packed))
 {
   uint32_t seq;
@@ -78,39 +79,62 @@ typedef struct __attribute__((packed))
 /* 4+4+4 (u32) + payload + 2 (u16) — проверяем, что упаковка без выравнивающих дыр. */
 _Static_assert(sizeof(lab02_pkt_t) == (14u + LAB02_PAYLOAD_SIZE), "lab02_pkt_t must be tightly packed");
 
-/* ================= БУФЕРЫ ================= */
+/* ================= ПРИЁМНЫЙ КОЛЬЦЕВОЙ БУФЕР (DMA) =================
+ * Размер выбран осознанно: он должен с запасом вмещать несколько пакетов, чтобы DMA не
+ * «догнал» разбор. Пакет = 30 байт (14 + payload 16). Берём 256 байт (~8 пакетов):
+ *  - на 115200 8N1 линия даёт 11520 байт/с (10 бит/байт); половина кольца (128 байт) при
+ *    самом плотном (нагрузочном) потоке набегает за ~11 мс, а её разбор в callback'е — это
+ *    десятки микросекунд (CRC на ядре 96 МГц), т.е. DMA физически не может обогнать разбор;
+ *  - в режиме PERIODIC между пакетами пауза, callback приходит по IDLE ровно на границе
+ *    пакета, кольцо почти всегда пустое — запас тем более избыточный;
+ *  - степень двойки удобна и оставляет большой резерв на будущее увеличение payload.
+ * Приём CIRCULAR — бесконечный: HAL_UARTEx_ReceiveToIdle_DMA запускается один раз в Lab_Init. */
+#define LAB02_RX_RING_SIZE   256u
+static uint8_t rxRing[LAB02_RX_RING_SIZE];
+static uint16_t rxOldPos = 0u;   /* позиция последнего разобранного байта в кольце (0..RING) */
+
+/* Сборщик пакета из потока: линейный буфер на один пакет + текущая длина. Трогается только
+ * в контексте прерывания (RxEvent/Error), поэтому без volatile. Union даёт удобный доступ и
+ * побайтно (bytes), и полями пакета (pkt). */
+static union
+{
+  lab02_pkt_t pkt;
+  uint8_t     bytes[LAB02_PACKET_SIZE];
+} asmBuf;
+static uint16_t asmLen   = 0u;   /* сколько байт уже накоплено в asmBuf */
+static uint8_t  wasSynced = 0u;  /* был ли недавно корректный пакет (для счётчика эпизодов ресинхр.) */
+
+/* ================= ПЕРЕДАЧА ================= */
 static lab02_pkt_t txpkt;   /* исходящий пакет */
-static lab02_pkt_t rxpkt;   /* приёмный буфер (одно приёмное задание за раз) */
 
 /* ===== Разделяемое с прерываниями — volatile (пишется в ISR, читается в Lab_Process) ===== */
 static volatile uint8_t  txBusy      = 0u;   /* идёт неблокирующая передача */
 static volatile uint32_t cTx         = 0u;   /* отправлено пакетов */
 static volatile uint32_t cRxOk       = 0u;   /* принято корректных пакетов */
-static volatile uint32_t cCrcErr     = 0u;   /* пакетов с неверной CRC */
+static volatile uint32_t cCrcErr     = 0u;   /* неудачных проверок CRC при сборке */
+static volatile uint32_t cResync     = 0u;   /* эпизодов ресинхронизации (сколько раз теряли синхронизацию) */
 static volatile uint32_t cLost       = 0u;   /* потеряно по разрывам seq */
 static volatile uint32_t cErrOre     = 0u;   /* ошибок приёмника: переполнение */
 static volatile uint32_t cErrFe      = 0u;   /* ошибок кадра */
 static volatile uint32_t cErrPe      = 0u;   /* ошибок чётности */
 static volatile uint32_t cErrNe      = 0u;   /* ошибок шума */
 static volatile uint32_t bytesTx     = 0u;   /* всего отправлено байт (нагрузочный режим) */
-static volatile uint32_t bytesRx     = 0u;   /* всего принято байт (полных приёмных заданий) */
+static volatile uint32_t bytesRx     = 0u;   /* всего принято байт из потока (нагрузочный режим) */
 static volatile uint32_t lastRttMs   = 0u;   /* последняя измеренная round-trip задержка, мс */
 static volatile uint8_t  haveRtt     = 0u;
 static volatile uint32_t remoteTx    = 0u;   /* последняя принятая t_tx соседа (для эха) */
 static volatile uint8_t  haveRemote  = 0u;
 static volatile uint32_t expRemoteSeq = 0u;  /* ожидаемый следующий seq соседа */
 static volatile uint8_t  haveRemoteSeq = 0u;
-static volatile uint8_t  loadActive  = 0u;   /* идёт нагрузочная отправка */
+static volatile uint8_t  loadActive  = 0u;   /* идёт нагрузочная отправка (читается в TxCplt в обоих режимах) */
+#if (LAB02_MODE == LAB02_MODE_LOAD)
 static volatile uint8_t  loadDone    = 0u;   /* нагрузка завершена, пора печатать итог */
-static uint32_t loadStartMs = 0u;
+static uint32_t loadStartMs = 0u;            /* начало окна измерения (только LOAD) */
+#endif
 
 /* ================= CRC ================= */
-/* CRC-16/CCITT (полином 0x1021, init 0xFFFF). Выбор: простая табличная-независимая
- * реализация (несколько строк), но заметно надёжнее простой суммы/XOR — ловит все
- * одиночные и двойные битовые ошибки и любые пакеты ошибок длиной до 16 бит. На 115200
- * стоимость (несколько десятков байт на пакет) ничтожна. Простая аддитивная сумма
- * пропускала бы перестановки байт и часть многобайтовых искажений — для «честной» оценки
- * канала этого мало. */
+/* CRC-16/CCITT (полином 0x1021, init 0xFFFF). Ловит все одиночные/двойные и пакеты ошибок
+ * до 16 бит; на 115200 стоимость ничтожна. Простая сумма/XOR пропускала бы перестановки. */
 static uint16_t lab02_crc16(const uint8_t *data, uint32_t len)
 {
   uint16_t crc = 0xFFFFu;
@@ -125,6 +149,79 @@ static uint16_t lab02_crc16(const uint8_t *data, uint32_t len)
     }
   }
   return crc;
+}
+
+/* ================= РАЗБОР ПРИНЯТОГО ПАКЕТА (контекст прерывания) ================= */
+static void lab02_handle_packet(void)
+{
+  uint32_t seq   = asmBuf.pkt.seq;
+  uint32_t ttx   = asmBuf.pkt.t_tx;
+  uint32_t techo = asmBuf.pkt.t_echo;
+
+  cRxOk++;
+  BSP_LED_Toggle(LED4);           /* зелёный: корректный приём */
+
+  /* Потери по разрывам нумерации. */
+  if (haveRemoteSeq == 0u)
+  {
+    haveRemoteSeq = 1u;
+  }
+  else if (seq > expRemoteSeq)
+  {
+    cLost += (seq - expRemoteSeq);
+  }
+  expRemoteSeq = seq + 1u;
+
+  /* RTT: если сосед отразил нашу метку — считаем round-trip (часы не синхронизированы). */
+  if (techo != 0u)
+  {
+    lastRttMs = (uint32_t)(HAL_GetTick() - techo);
+    haveRtt   = 1u;
+  }
+
+  /* Запоминаем t_tx соседа, чтобы отразить её в нашем следующем пакете. */
+  remoteTx   = ttx;
+  haveRemote = 1u;
+}
+
+/* ================= СБОРКА ПАКЕТОВ ИЗ ПОТОКА (контекст прерывания) =================
+ * Накапливаем байты в asmBuf. Как только набрали полный пакет — проверяем CRC:
+ *  - CRC сошлась  -> пакет принят, начинаем следующий с нуля;
+ *  - CRC не сошлась -> МИНИМАЛЬНАЯ РЕСИНХРОНИЗАЦИЯ: выбрасываем самый старый байт, сдвигаем
+ *    буфер на один байт, длина = PACKET_SIZE-1, и ждём следующий байт. Так за один входящий
+ *    байт делается ровно один сдвиг (работа O(1) на байт, число попыток естественно
+ *    ограничено: приёмник дошагает до истинной границы не позже, чем за PACKET_SIZE байт).
+ * Полное кадрирование с маркерами — это LAB03; здесь достаточно ресинхронизации по CRC. */
+static void lab02_feed_byte(uint8_t b)
+{
+  asmBuf.bytes[asmLen] = b;
+  asmLen++;
+
+  if (asmLen < LAB02_PACKET_SIZE)
+  {
+    return;                        /* пакет ещё не набран */
+  }
+
+  /* Набран полный пакет — проверяем CRC (по всему пакету, кроме поля crc). */
+  if (lab02_crc16(asmBuf.bytes, (uint32_t)(LAB02_PACKET_SIZE - 2u)) == asmBuf.pkt.crc)
+  {
+    lab02_handle_packet();
+    asmLen    = 0u;                /* начинаем следующий пакет с чистого листа */
+    wasSynced = 1u;
+  }
+  else
+  {
+    cCrcErr++;
+    if (wasSynced != 0u)
+    {
+      cResync++;                   /* считаем эпизод: были синхронизированы и потеряли синхронизацию */
+      wasSynced = 0u;
+    }
+    BSP_LED_On(LED5);              /* красный: сбой приёма/рассинхронизация */
+    /* сдвиг на один байт: [1..N-1] -> [0..N-2] */
+    memmove(&asmBuf.bytes[0], &asmBuf.bytes[1], (size_t)(LAB02_PACKET_SIZE - 1u));
+    asmLen = (uint16_t)(LAB02_PACKET_SIZE - 1u);
+  }
 }
 
 /* ================= ПЕРЕДАЧА (неблокирующая) ================= */
@@ -157,6 +254,16 @@ static void lab02_send(void)
   BSP_LED_Toggle(LED3);           /* оранжевый: факт отправки */
 }
 
+/* ================= ЗАПУСК ПРИЁМА ================= */
+static void lab02_start_rx(void)
+{
+  /* Сбрасываем разбор: после (пере)запуска DMA пишет с начала кольца (NDTR = полный размер). */
+  rxOldPos  = 0u;
+  asmLen    = 0u;
+  wasSynced = 0u;
+  (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rxRing, LAB02_RX_RING_SIZE);
+}
+
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
 uint8_t Lab_Init(void)
 {
@@ -168,14 +275,11 @@ uint8_t Lab_Init(void)
   BSP_LED_Off(LED4);
   BSP_LED_Off(LED5);
 
-  /* Включаем прерывание USART1 (в .ioc оно не включалось — делаем в коде, .ioc не трогаем). */
-  HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  /* Прерывания USART1 и DMA2 Stream2 включены сгенерированным кодом (CubeMX/.ioc);
+   * здесь NVIC руками НЕ трогаем. Запускаем бесконечный кольцевой приём по IDLE. */
+  lab02_start_rx();
 
-  /* Ставим первое приёмное задание на ровно один пакет. */
-  (void)HAL_UART_Receive_IT(&huart1, (uint8_t *)&rxpkt, LAB02_PACKET_SIZE);
-
-  TRACE_LOG("LAB02 uart link: 115200 8N1, packet=%u B (payload %u), mode=%s",
+  TRACE_LOG("LAB02 uart link (RX: circular DMA + IDLE): 115200 8N1, packet=%u B (payload %u), mode=%s",
             (unsigned)LAB02_PACKET_SIZE, (unsigned)LAB02_PAYLOAD_SIZE,
             (LAB02_MODE == LAB02_MODE_LOAD) ? "LOAD" : "PERIODIC");
 
@@ -206,8 +310,8 @@ void Lab_Process(void)
   if ((uint32_t)(now - lastStat) >= 1000u)
   {
     lastStat = now;
-    TRACE_LOG("stat: tx=%u rx=%u lost=%u crc=%u ore=%u fe=%u pe=%u ne=%u rtt=%s%u ms",
-              (unsigned)cTx, (unsigned)cRxOk, (unsigned)cLost, (unsigned)cCrcErr,
+    TRACE_LOG("stat: tx=%u rx=%u lost=%u crc=%u resync=%u ore=%u fe=%u pe=%u ne=%u rtt=%s%u ms",
+              (unsigned)cTx, (unsigned)cRxOk, (unsigned)cLost, (unsigned)cCrcErr, (unsigned)cResync,
               (unsigned)cErrOre, (unsigned)cErrFe, (unsigned)cErrPe, (unsigned)cErrNe,
               (haveRtt ? "" : "n/a "), (unsigned)lastRttMs);
   }
@@ -222,15 +326,15 @@ void Lab_Process(void)
   if (loadDone != 0u)
   {
     uint32_t elapsed = (uint32_t)(now - loadStartMs);
+    /* Скорость по фактически принятым байтам потока (bytesRx растёт в RxEventCallback на
+     * каждый доставленный DMA байт — независимо от кадрирования). На 115200 8N1 предел линии
+     * = 11520 байт/с; DMA-приём и CRC на 96 МГц ничтожны, печать идёт ПОСЛЕ окна — число
+     * отражает КАНАЛ, а не диагностику. */
     uint32_t bps  = (elapsed != 0u) ? (uint32_t)(((uint64_t)bytesRx * 1000u) / elapsed) : 0u;
     loadDone = 0u;
-    /* Что ограничивает скорость: на 115200 8N1 предел линии = 115200/10 = 11520 байт/с
-     * (10 бит на байт со старт/стоп). Обработка приёма (~11.5k IRQ/с) и CRC на ядре 96 МГц
-     * ничтожны, а печать идёт ПОСЛЕ окна измерения — поэтому число отражает КАНАЛ, а не
-     * диагностику. Итоговая скорость по принятым байтам (bytes/elapsed). */
-    TRACE_LOG("load done: elapsed=%u ms, tx_bytes=%u, rx_bytes=%u, rate=%u B/s (%u bit/s), lost=%u, crc_err=%u",
+    TRACE_LOG("load done: elapsed=%u ms, tx_bytes=%u, rx_bytes=%u, rate=%u B/s (%u bit/s), lost=%u, crc_err=%u, resync=%u",
               (unsigned)elapsed, (unsigned)bytesTx, (unsigned)bytesRx,
-              (unsigned)bps, (unsigned)(bps * 8u), (unsigned)cLost, (unsigned)cCrcErr);
+              (unsigned)bps, (unsigned)(bps * 8u), (unsigned)cLost, (unsigned)cCrcErr, (unsigned)cResync);
     if (haveRtt != 0u)
     {
       TRACE_LOG("load rtt(last)=%u ms", (unsigned)lastRttMs);
@@ -240,13 +344,6 @@ void Lab_Process(void)
 }
 
 /* ================= CALLBACK'И HAL (контекст прерывания — БЕЗ печати) ================= */
-
-/* Обработчик прерывания USART1. В .ioc он не генерировался — определяем здесь (перекрывает
- * слабый вектор из startup). NVIC включён в Lab_Init. */
-void USART1_IRQHandler(void)
-{
-  HAL_UART_IRQHandler(&huart1);
-}
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -261,64 +358,65 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+/* Событие приёма: вызывается на HALF-transfer, TRANSFER-COMPLETE и IDLE. Size — АБСОЛЮТНАЯ
+ * позиция в кольце (0..RING), до которой данные уже лежат. Обрабатываем все три события
+ * одинаково: скармливаем сборщику новые байты [rxOldPos..Size) с учётом заворота кольца
+ * (архитектура — как в эталоне UART_ReceptionToIdle_CircularDMA). */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  uint16_t calc;
-  uint32_t seq;
-  uint32_t techo;
-  uint32_t ttx;
+  uint16_t i;
 
   if (huart->Instance != USART1)
   {
     return;
   }
 
-  /* Полный пакет принят — байты доставлены (учитываем и «битые» для оценки канала). */
-  bytesRx += LAB02_PACKET_SIZE;
-
-  /* Снимаем нужные поля ДО перезапуска приёма в тот же буфер. */
-  seq   = rxpkt.seq;
-  ttx   = rxpkt.t_tx;
-  techo = rxpkt.t_echo;
-  calc  = lab02_crc16((const uint8_t *)&rxpkt, (uint32_t)(LAB02_PACKET_SIZE - 2u));
-
-  if (calc == rxpkt.crc)
+  if (Size != rxOldPos)
   {
-    cRxOk++;
-    BSP_LED_Toggle(LED4);         /* зелёный: корректный приём */
-
-    /* Потери по разрывам нумерации. */
-    if (haveRemoteSeq == 0u)
+    if (Size > rxOldPos)
     {
-      haveRemoteSeq = 1u;
+      /* обычный случай: индекс вырос, новый участок непрерывен */
+      bytesRx += (uint32_t)(Size - rxOldPos);
+      for (i = rxOldPos; i < Size; i++)
+      {
+        lab02_feed_byte(rxRing[i]);
+      }
     }
-    else if (seq > expRemoteSeq)
+    else
     {
-      cLost += (seq - expRemoteSeq);
+      /* достигнут конец кольца: сначала «хвост» [rxOldPos..RING), потом «голова» [0..Size) */
+      bytesRx += (uint32_t)(LAB02_RX_RING_SIZE - rxOldPos) + (uint32_t)Size;
+      for (i = rxOldPos; i < LAB02_RX_RING_SIZE; i++)
+      {
+        lab02_feed_byte(rxRing[i]);
+      }
+      for (i = 0u; i < Size; i++)
+      {
+        lab02_feed_byte(rxRing[i]);
+      }
     }
-    expRemoteSeq = seq + 1u;
-
-    /* RTT: если сосед отразил нашу метку — считаем round-trip. */
-    if (techo != 0u)
-    {
-      lastRttMs = (uint32_t)(HAL_GetTick() - techo);
-      haveRtt   = 1u;
-    }
-
-    /* Запоминаем t_tx соседа, чтобы отразить её в нашем следующем пакете. */
-    remoteTx   = ttx;
-    haveRemote = 1u;
-  }
-  else
-  {
-    cCrcErr++;
-    BSP_LED_On(LED5);             /* красный: ошибка */
+    rxOldPos = Size;
   }
 
-  /* Ставим следующее приёмное задание. */
-  (void)HAL_UART_Receive_IT(&huart1, (uint8_t *)&rxpkt, LAB02_PACKET_SIZE);
+  /* IDLE — граница пакета: линия замолчала. Если в сборщике остался НЕполный пакет (потеряли
+   * байт внутри кадра), это самая надёжная точка ресинхронизации — сбрасываем «хвост», чтобы
+   * следующий пакет начать с нуля. В нагрузочном режиме пауз нет, IDLE не приходит — там
+   * работает только сдвиговая ресинхронизация по CRC в lab02_feed_byte. */
+  if ((HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_IDLE) && (asmLen != 0u))
+  {
+    if (wasSynced != 0u)
+    {
+      cResync++;
+      wasSynced = 0u;
+    }
+    asmLen = 0u;
+  }
 }
 
+/* Ошибка приёмника. В DMA-режиме (проверено по коду HAL: HAL_UART_IRQHandler при DMAR любую
+ * ошибку — FE/NE/PE/ORE — считает блокирующей и делает UART_EndRxTransfer + abort DMA, а
+ * UART_DMAError на ошибке контроллера — то же самое; см. stm32f4xx_hal_uart.c) приём
+ * ОСТАНАВЛИВАЕТСЯ. Поэтому здесь его обязательно перезапускаем. */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   uint32_t ec;
@@ -334,8 +432,8 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   if ((ec & HAL_UART_ERROR_NE)  != 0u) { cErrNe++;  }   /* ошибка шума */
   BSP_LED_On(LED5);                                     /* красный: ошибка */
 
-  /* Ошибка обрывает приём по IT — перезапускаем приёмное задание. */
-  (void)HAL_UART_Receive_IT(&huart1, (uint8_t *)&rxpkt, LAB02_PACKET_SIZE);
+  /* Перезапуск кольцевого приёма (сбрасывает и позицию разбора, и сборщик пакета). */
+  lab02_start_rx();
 }
 
 #endif /* LAB_ID == 2 */
