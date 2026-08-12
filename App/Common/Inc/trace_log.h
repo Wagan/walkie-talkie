@@ -1,6 +1,6 @@
 /**
   ******************************************************************************
-  * @file    App/Inc/trace_log.h
+  * @file    App/Common/Inc/trace_log.h
   * @author  Wagan Sarukhanov
   * @brief   Простой интерфейс логирования с уровнями поверх printf (вывод в SWO).
   *

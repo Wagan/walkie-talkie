@@ -1,10 +1,14 @@
 /**
   ******************************************************************************
-  * @file    App/Src/audio_loopback.c
+  * @file    App/Labs/stand_check.c
   * @author  Wagan Sarukhanov
-  * @brief   Демо loopback «микрофон MP45DT02 → кодек CS43L22», Fs = 16 кГц.
+  * @brief   LAB00 «Проверка стенда»: микрофон MP45DT02 → кодек CS43L22, Fs = 16 кГц,
+  *          + heartbeat и статус по SWO. Реализует единый интерфейс Lab_Init/Lab_Process.
   *
   * Copyright (c) 1991-2026 NCPR LLC (Flexlab). All rights reserved.
+  ******************************************************************************
+  * Работа компилируется только в конфигурации LAB00 (LAB_ID == 0) — весь файл обёрнут
+  * условной компиляцией ниже.
   ******************************************************************************
   * ТРАКТ ДАННЫХ (по эталону Audio_playback_and_record, пересчёт под Fs = 16000):
   *
@@ -44,10 +48,14 @@
   ******************************************************************************
   */
 
-#include "audio_loopback.h"
+#include "lab.h"                          /* единый интерфейс Lab_Init/Lab_Process + проверка LAB_ID */
+
+#if LAB_ID == 0
+
 #include "stm32f411e_discovery_audio.h"   /* BSP аудио + константы (INTERNAL_BUFF_SIZE, ...) */
 #include "stm32f411e_discovery.h"         /* светодиоды BSP_LED_* */
 #include "trace_log.h"                    /* TRACE_LOG / TRACE_ERR (печать только вне ISR) */
+#include "trace_swo.h"                    /* Trace_SWO_PutString для heartbeat */
 #include <string.h>
 
 /* Частота дискретизации демо и умеренная громкость кодека (0..100). */
@@ -78,6 +86,11 @@ static uint32_t lbStatusTick   = 0U;
 static uint32_t lbBlocksShown  = 0U;
 static uint8_t  lbErrReported  = 0U;
 
+/* SWO heartbeat (перенесён из main.c при раскладке под лабы, чтобы поведение LAB00
+   не изменилось): раз в ~1 c печатается строка "SWO <n>" из основного цикла. */
+static uint32_t swoHbTick = 0U;
+static uint32_t swoHbSeq  = 0U;
+
 /**
   * @brief  Преобразовать одну половину PDM-буфера в PCM и опубликовать для кодека.
   * @param  pdmHalf: указатель на начало обрабатываемой половины pdmBuf.
@@ -96,7 +109,7 @@ static void Loopback_ConvertBlock(uint16_t *pdmHalf)
   BSP_LED_Toggle(LED6);   /* синий: индикация обработки блоков */
 }
 
-uint8_t AudioLoopback_Init(void)
+uint8_t Lab_Init(void)
 {
   /* Светодиоды-индикаторы: LED4 зелёный — init OK, LED6 синий — обработка, LED5 красный — ошибка. */
   BSP_LED_Init(LED4);
@@ -168,7 +181,7 @@ uint8_t AudioLoopback_Init(void)
   return AUDIO_OK;
 }
 
-void AudioLoopback_Process(void)
+void Lab_Process(void)
 {
   /* Вся обработка звука — в прерываниях DMA. Здесь (основной цикл, не ISR) печатаем
      статус не чаще раза в секунду и один раз докладываем об ошибке. */
@@ -191,11 +204,37 @@ void AudioLoopback_Process(void)
     lbStatusTick  = HAL_GetTick();
     TRACE_LOG("status: blocks=%u err=%u", (unsigned)delta, (unsigned)loopbackError);
   }
-}
 
-uint8_t AudioLoopback_HasError(void)
-{
-  return loopbackError;
+  /* SWO heartbeat (перенесён из main.c при раскладке под лабы — поведение LAB00 не
+     меняется): раз в ~1 c строка "SWO <n>". Число форматируется вручную, без printf. */
+  if ((uint32_t)(HAL_GetTick() - swoHbTick) >= 1000U)
+  {
+    char buf[20];
+    char rev[10];
+    uint32_t n = swoHbSeq++;
+    uint8_t i = 0U;
+    uint8_t k = 0U;
+    uint8_t j;
+
+    swoHbTick = HAL_GetTick();
+    buf[i++] = 'S';
+    buf[i++] = 'W';
+    buf[i++] = 'O';
+    buf[i++] = ' ';
+    do
+    {
+      rev[k++] = (char)('0' + (n % 10U));
+      n /= 10U;
+    } while (n != 0U);
+    for (j = k; j > 0U; j--)
+    {
+      buf[i++] = rev[j - 1U];
+    }
+    buf[i++] = '\r';
+    buf[i++] = '\n';
+    buf[i] = '\0';
+    Trace_SWO_PutString(buf);
+  }
 }
 
 /* ===== Колбэки BSP (перекрывают __weak из stm32f411e_discovery_audio.c) ===== */
@@ -223,7 +262,7 @@ void BSP_AUDIO_OUT_TransferComplete_CallBack(void)
    у входа Error_Callback, у выхода Error_CallBack). */
 void BSP_AUDIO_IN_Error_Callback(void)
 {
-  /* ISR: только фиксируем источник и флаг; печать — в AudioLoopback_Process (основной цикл). */
+  /* ISR: только фиксируем источник и флаг; печать — в Lab_Process (основной цикл). */
   lbErrWho = "BSP_AUDIO_IN_Error_Callback";
   loopbackError = 1U;
   BSP_LED_On(LED5);
@@ -231,8 +270,10 @@ void BSP_AUDIO_IN_Error_Callback(void)
 
 void BSP_AUDIO_OUT_Error_CallBack(void)
 {
-  /* ISR: только фиксируем источник и флаг; печать — в AudioLoopback_Process (основной цикл). */
+  /* ISR: только фиксируем источник и флаг; печать — в Lab_Process (основной цикл). */
   lbErrWho = "BSP_AUDIO_OUT_Error_CallBack";
   loopbackError = 1U;
   BSP_LED_On(LED5);
 }
+
+#endif /* LAB_ID == 0 */

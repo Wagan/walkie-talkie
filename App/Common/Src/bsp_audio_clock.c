@@ -1,6 +1,6 @@
 /**
   ******************************************************************************
-  * @file    App/Src/bsp_audio_clock.c
+  * @file    App/Common/Src/bsp_audio_clock.c
   * @author  Wagan Sarukhanov
   * @brief   Единое тактирование PLLI2S для обоих аудиотрактов (loopback-демо).
   *

@@ -1,6 +1,6 @@
 /**
   ******************************************************************************
-  * @file    App/Src/trace_swo.c
+  * @file    App/Common/Src/trace_swo.c
   * @author  Wagan Sarukhanov
   * @brief   Минимальный вывод строки в SWO через ITM (CMSIS ITM_SendChar), Часть 1.
   *

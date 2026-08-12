@@ -1,6 +1,6 @@
 /**
   ******************************************************************************
-  * @file    App/Inc/trace_swo.h
+  * @file    App/Common/Inc/trace_swo.h
   * @author  Wagan Sarukhanov
   * @brief   Минимальный односторонний вывод диагностики через SWO (ITM), Часть 1.
   *
