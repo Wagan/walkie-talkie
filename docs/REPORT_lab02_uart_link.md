@@ -181,4 +181,5 @@ Set Active → LAB02), собрать, прошить ОБЕ платы одно
 регенерацию пережили.
 
 - Отчёт: `docs/REPORT_lab02_uart_link.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`0a17ee6fa64806594f0fa06c98744c0fba45b804`** · Push: OK (`bf2951c..0a17ee6 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
