@@ -159,4 +159,5 @@ void    Lab_Process(void); /* вызывается в основном цикл�
 ## Публикация
 
 - Отчёт: `docs/REPORT_lab_layout.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`61a1fa3785f1aba8e3c83ad0241be1881a14744f`** · Push: OK (`6b7c4c5..61a1fa3 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
