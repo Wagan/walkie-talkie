@@ -182,4 +182,5 @@ USART1 отдать под провод (PA9/PA10), остаётся:
 ## Публикация
 
 - Отчёт: `docs/REPORT_lab02_recon.md`.
-- Хеш коммита: `<PLACEHOLDER>` · Push: `<PLACEHOLDER>`
+- Хеш коммита: **`19e1c36733ae95eae681ce2a946aaa63f6719a71`** · Push: OK (`2f4527a..19e1c36 main -> main`, exit 0).
+- (Хеш вписан вторым коммитом.)
