@@ -25,6 +25,7 @@ docs/reference/
 .cproject.bak.before-app
 .cproject.bak.before-labs
 .cproject.bak.before-lab02
+.cproject.bak.before-lab05
 
 # Конфигурация отладки CubeIDE: содержит машинно-специфичный абсолютный путь
 # (stlink.log_file → C:\Users\user\...), поэтому в репозиторий не идёт

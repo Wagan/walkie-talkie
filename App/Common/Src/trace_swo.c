@@ -53,8 +53,19 @@ void Trace_SWO_PutString(const char *s)
   *         При отсутствии отладчика ITM_SendChar() возвращает сразу (см. выше) — printf
   *         не блокирует ядро.
   */
+/**
+  * @brief  Слабый хук второго приёмника вывода printf. По умолчанию — пусто.
+  * @note   Переопределяется модулем консоли (App/Common/console.c, только LAB05) для
+  *         дублирования вывода в USB CDC. Для LAB00/LAB02 остаётся пустым — SWO без изменений.
+  */
+__attribute__((weak)) void Trace_UsbPutChar(int ch)
+{
+  (void)ch;
+}
+
 int __io_putchar(int ch)
 {
   (void)ITM_SendChar((uint32_t)(uint8_t)ch);
+  Trace_UsbPutChar(ch);         /* доп. приёмник (USB в LAB05); по умолчанию no-op */
   return ch;
 }
