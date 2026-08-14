@@ -33,3 +33,4 @@ walkie-talkie.launch
 
 # Claude Code
 .claude/settings.local.json
+.cproject.bak.before-lab03

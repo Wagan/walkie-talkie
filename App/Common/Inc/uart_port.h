@@ -59,6 +59,23 @@ void     UartPort_SetBaud(uint32_t baud);     /* переинициализир�
 uint32_t UartPort_GetBaud(void);              /* текущая скорость */
 uint16_t UartPort_RxPos(void);                /* позиция разбора кольца (0..RING) для диагностики */
 
+/* --- Кадрирование (LAB03): переключение схемы и порча для демонстрации --- */
+void     UartPort_SetFraming(uint8_t on);        /* 0 — пакет фикс. длины (LAB02), 1 — SLIP-кадры */
+uint8_t  UartPort_GetFraming(void);
+void     UartPort_SetCorrupt(uint8_t on, uint16_t everyK);  /* портить каждый K-й отправляемый байт */
+uint8_t  UartPort_GetCorrupt(void);
+uint16_t UartPort_GetCorruptK(void);
+
+/* Счётчики протокола кадрирования (копия). */
+typedef struct
+{
+  uint32_t framesRx;      /* принято корректных кадров */
+  uint32_t framesCrc;     /* кадров отброшено по CRC */
+  uint32_t resync;        /* восстановлений синхронизации */
+  uint32_t bytesDropped;  /* байт отброшено при поиске границы */
+} UartPort_ProtoStats;
+void     UartPort_GetProto(UartPort_ProtoStats *out);
+
 /* --- Статистика и диагностика --- */
 void     UartPort_GetStats(UartPort_Stats *out);
 void     UartPort_ResetStats(void);

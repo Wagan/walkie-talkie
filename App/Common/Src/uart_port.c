@@ -15,9 +15,10 @@
 
 #include "lab.h"   /* LAB_ID + его проверка (единая точка правды) */
 
-#if (LAB_ID == 2) || (LAB_ID == 5)
+#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 5)
 
 #include "uart_port.h"
+#include "frame.h"                  /* кадрирование SLIP (режим LAB03) */
 #include "stm32f4xx_hal.h"          /* HAL UART/UARTEx + HAL_GetTick */
 #include <string.h>
 
@@ -39,6 +40,30 @@ typedef struct __attribute__((packed))
 
 #define PKT_SIZE   ((uint16_t)sizeof(uartport_pkt_t))
 _Static_assert(sizeof(uartport_pkt_t) == (14u + UARTPORT_PAYLOAD_SIZE), "uartport_pkt_t must be tightly packed");
+
+/* ================= КАДРИРОВАНИЕ (LAB03) =================
+ * Полезная нагрузка кадра — те же поля, что в пакете, но БЕЗ собственной CRC: целостность
+ * обеспечивает CRC самого кадра (frame.c). Режим кадрирования включается UartPort_SetFraming;
+ * по умолчанию 0 — старая схема пакетов фиксированной длины (для LAB02/LAB05 поведение прежнее). */
+typedef struct __attribute__((packed))
+{
+  uint32_t seq;
+  uint32_t t_tx;
+  uint32_t t_echo;
+  uint8_t  payload[UARTPORT_PAYLOAD_SIZE];
+} uartport_fpl_t;
+
+#define FPL_SIZE       ((uint16_t)sizeof(uartport_fpl_t))
+/* Худший случай кодирования: END + каждый из (FPL_SIZE+2 CRC) байт экранирован (2 байта) + END. */
+#define FRAME_ENC_MAX  ((uint16_t)(2u + (2u * (FPL_SIZE + 2u))))
+
+static uint8_t        g_framing   = 0u;    /* 0 — пакет фикс. длины (LAB02), 1 — SLIP-кадры (LAB03) */
+static Frame_Decoder  g_dec;               /* приёмный автомат протокола */
+static uint8_t        g_corrupt   = 0u;    /* портить каждый K-й отправляемый байт (демонстрация) */
+static uint16_t       g_corruptK  = 32u;
+static uint32_t       g_txByteCtr = 0u;    /* сквозной счётчик отправленных байт (для порчи) */
+static uartport_fpl_t g_ftx;               /* исходящая нагрузка кадра */
+static uint8_t        g_ftxBuf[FRAME_ENC_MAX];  /* закодированный кадр (живёт во время Transmit_IT) */
 
 /* ================= ПРИЁМНЫЙ КОЛЬЦЕВОЙ БУФЕР (DMA) =================
  * 256 байт (~8 пакетов): половина кольца (128 Б) на пределе линии 11520 Б/с набегает за
@@ -108,13 +133,11 @@ static uint16_t crc16(const uint8_t *data, uint32_t len)
   return crc;
 }
 
-/* ================= РАЗБОР ПРИНЯТОГО ПАКЕТА (ISR) ================= */
-static void handle_packet(void)
+/* ================= УЧЁТ ПРИНЯТОЙ НАГРУЗКИ (ISR) =================
+ * Общая бухгалтерия для обеих схем (пакет фикс. длины и кадр SLIP): потери по разрывам seq,
+ * RTT по эху, запоминание метки соседа, счётчик корректных, индикация. */
+static void account_rx(uint32_t seq, uint32_t ttx, uint32_t techo)
 {
-  uint32_t seq   = asmBuf.pkt.seq;
-  uint32_t ttx   = asmBuf.pkt.t_tx;
-  uint32_t techo = asmBuf.pkt.t_echo;
-
   cRxOk++;
 
   if (haveRemoteSeq == 0u)
@@ -137,6 +160,23 @@ static void handle_packet(void)
   haveRemote = 1u;
 
   UartPort_OnRxOk();
+}
+
+/* Старая схема: полный пакет собран и CRC сошлась. */
+static void handle_packet(void)
+{
+  account_rx(asmBuf.pkt.seq, asmBuf.pkt.t_tx, asmBuf.pkt.t_echo);
+}
+
+/* Приёмник корректного кадра (вызывается из Frame_DecodeByte в контексте ISR). */
+static void frame_sink(const uint8_t *payload, uint16_t len)
+{
+  if (len == FPL_SIZE)
+  {
+    const uartport_fpl_t *p = (const uartport_fpl_t *)(const void *)payload;
+    account_rx(p->seq, p->t_tx, p->t_echo);
+  }
+  /* иной размер — не наш кадр, игнорируем (CRC уже подтвердила целостность содержимого) */
 }
 
 /* ================= СБОРКА ПАКЕТОВ ИЗ ПОТОКА (ISR) =================
@@ -181,25 +221,50 @@ static void dump_put(uint8_t b)
   dumpCount++;
 }
 
+/* Обработать один принятый байт: в dump + по активной схеме (кадры SLIP или пакет фикс. длины). */
+static void rx_byte(uint8_t b)
+{
+  dump_put(b);
+  if (g_framing != 0u) { Frame_DecodeByte(&g_dec, b, frame_sink); }
+  else                 { feed_byte(b); }
+}
+
 /* ================= ПЕРЕДАЧА ================= */
-uint8_t UartPort_SendPacket(void)
+/* Внести порчу: перевернуть (XOR 0xFF) каждый K-й отправляемый байт по сквозному счётчику.
+ * Простой и наглядный способ: студент видит, как приёмник восстанавливается после сбоя. */
+static void apply_corrupt(uint8_t *buf, uint16_t len)
 {
   uint16_t i;
-
-  if (txBusy != 0u)
+  for (i = 0u; i < len; i++)
   {
-    return 1u;                     /* предыдущая передача ещё идёт */
+    g_txByteCtr++;
+    if ((g_corrupt != 0u) && (g_corruptK != 0u) && ((g_txByteCtr % g_corruptK) == 0u))
+    {
+      buf[i] ^= 0xFFu;
+    }
   }
+}
 
-  txpkt.seq    = cTx;
-  txpkt.t_tx   = HAL_GetTick();
-  txpkt.t_echo = (haveRemote != 0u) ? remoteTx : 0u;
+/* Заполнить общие поля исходящей нагрузки (seq/t_tx/t_echo/payload). */
+static void fill_tx_fields(uint32_t *seq, uint32_t *ttx, uint32_t *techo, uint8_t *pl)
+{
+  uint16_t i;
+  *seq   = cTx;
+  *ttx   = HAL_GetTick();
+  *techo = (haveRemote != 0u) ? remoteTx : 0u;
   for (i = 0u; i < UARTPORT_PAYLOAD_SIZE; i++)
   {
-    txpkt.payload[i] = (uint8_t)(0xA0u + (i & 0x0Fu));
+    pl[i] = (uint8_t)(0xA0u + (i & 0x0Fu));
   }
+}
+
+/* Старая схема: пакет фиксированной длины с собственной CRC. */
+static uint8_t send_legacy(void)
+{
+  fill_tx_fields(&txpkt.seq, &txpkt.t_tx, &txpkt.t_echo, txpkt.payload);
   txpkt.crc = crc16((const uint8_t *)&txpkt, (uint32_t)(PKT_SIZE - 2u));
 
+  apply_corrupt((uint8_t *)&txpkt, PKT_SIZE);
   txBusy = 1u;
   if (HAL_UART_Transmit_IT(&huart2, (const uint8_t *)&txpkt, PKT_SIZE) != HAL_OK)
   {
@@ -209,6 +274,36 @@ uint8_t UartPort_SendPacket(void)
   cTx++;
   bytesTx += PKT_SIZE;
   return 0u;
+}
+
+/* Новая схема: SLIP-кадр (целостность — CRC кадра). */
+static uint8_t send_framed(void)
+{
+  uint16_t enc;
+  fill_tx_fields(&g_ftx.seq, &g_ftx.t_tx, &g_ftx.t_echo, g_ftx.payload);
+
+  enc = Frame_Encode((const uint8_t *)&g_ftx, FPL_SIZE, g_ftxBuf, (uint16_t)sizeof(g_ftxBuf));
+  if (enc == 0u) { return 2u; }
+
+  apply_corrupt(g_ftxBuf, enc);
+  txBusy = 1u;
+  if (HAL_UART_Transmit_IT(&huart2, g_ftxBuf, enc) != HAL_OK)
+  {
+    txBusy = 0u;
+    return 2u;
+  }
+  cTx++;
+  bytesTx += enc;
+  return 0u;
+}
+
+uint8_t UartPort_SendPacket(void)
+{
+  if (txBusy != 0u)
+  {
+    return 1u;                     /* предыдущая передача ещё идёт */
+  }
+  return (g_framing != 0u) ? send_framed() : send_legacy();
 }
 
 uint8_t UartPort_SendByte(uint8_t b)
@@ -228,6 +323,33 @@ uint16_t UartPort_PacketSize(void) { return PKT_SIZE; }
 uint32_t UartPort_GetBaud(void)    { return huart2.Init.BaudRate; }
 uint16_t UartPort_RxPos(void)      { return rxOldPos; }
 
+/* ================= КАДРИРОВАНИЕ: управление и статистика ================= */
+void UartPort_SetFraming(uint8_t on)
+{
+  g_framing = (on != 0u) ? 1u : 0u;
+  Frame_DecoderInit(&g_dec);        /* переключение режима — с чистого приёмного автомата */
+}
+
+uint8_t UartPort_GetFraming(void) { return g_framing; }
+
+void UartPort_SetCorrupt(uint8_t on, uint16_t everyK)
+{
+  g_corrupt = (on != 0u) ? 1u : 0u;
+  if (everyK != 0u) { g_corruptK = everyK; }
+}
+
+uint8_t  UartPort_GetCorrupt(void)  { return g_corrupt; }
+uint16_t UartPort_GetCorruptK(void) { return g_corruptK; }
+
+void UartPort_GetProto(UartPort_ProtoStats *out)
+{
+  if (out == NULL) { return; }
+  out->framesRx     = g_dec.stats.framesRx;
+  out->framesCrc    = g_dec.stats.framesCrc;
+  out->resync       = g_dec.stats.resync;
+  out->bytesDropped = g_dec.stats.bytesDropped;
+}
+
 /* ================= ЗАПУСК/ПЕРЕЗАПУСК ПРИЁМА ================= */
 static void start_rx(void)
 {
@@ -239,6 +361,8 @@ static void start_rx(void)
 
 void UartPort_Init(void)
 {
+  Frame_DecoderInit(&g_dec);
+  g_txByteCtr = 0u;
   start_rx();
 }
 
@@ -280,6 +404,10 @@ void UartPort_ResetStats(void)
   cErrOre = 0u; cErrFe = 0u; cErrPe = 0u; cErrNe = 0u;
   bytesTx = 0u; bytesRx = 0u; lastRttMs = 0u; haveRtt = 0u;
   dumpCount = 0u; dumpHead = 0u;
+  /* Счётчики протокола тоже обнуляем (состояние приёмного автомата не трогаем — иначе
+   * можно разорвать текущий кадр в потоке). */
+  g_dec.stats.framesRx = 0u; g_dec.stats.framesCrc = 0u;
+  g_dec.stats.resync = 0u; g_dec.stats.bytesDropped = 0u;
 }
 
 uint16_t UartPort_Dump(uint8_t *dst, uint16_t max)
@@ -326,8 +454,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
       bytesRx += (uint32_t)(Size - rxOldPos);
       for (i = rxOldPos; i < Size; i++)
       {
-        dump_put(rxRing[i]);
-        feed_byte(rxRing[i]);
+        rx_byte(rxRing[i]);
       }
     }
     else
@@ -335,20 +462,20 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
       bytesRx += (uint32_t)(RX_RING_SIZE - rxOldPos) + (uint32_t)Size;
       for (i = rxOldPos; i < RX_RING_SIZE; i++)
       {
-        dump_put(rxRing[i]);
-        feed_byte(rxRing[i]);
+        rx_byte(rxRing[i]);
       }
       for (i = 0u; i < Size; i++)
       {
-        dump_put(rxRing[i]);
-        feed_byte(rxRing[i]);
+        rx_byte(rxRing[i]);
       }
     }
     rxOldPos = Size;
   }
 
-  /* IDLE — граница пакета: сбрасываем неполный хвост (потерянный байт внутри кадра). */
-  if ((HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_IDLE) && (asmLen != 0u))
+  /* IDLE — граница пакета в СТАРОЙ схеме: сбрасываем неполный хвост. В режиме кадрирования
+   * границу задаёт маркер END, поэтому IDLE не используется. */
+  if ((g_framing == 0u) &&
+      (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_IDLE) && (asmLen != 0u))
   {
     if (wasSynced != 0u)
     {

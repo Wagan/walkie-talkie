@@ -22,8 +22,8 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-#if (LAB_ID == 5)
-#include "console.h"   /* консоль LAB05: складываем принятое из USB в её буфер */
+#if (LAB_ID == 3) || (LAB_ID == 5)
+#include "console.h"   /* консоль (LAB03/LAB05): складываем принятое из USB в её буфер */
 #endif
 /* USER CODE END INCLUDE */
 
@@ -263,7 +263,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-#if (LAB_ID == 5)
+#if (LAB_ID == 3) || (LAB_ID == 5)
   Console_RxFromISR(Buf, *Len);   /* только буферизация; разбор — в основном цикле */
 #endif
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
