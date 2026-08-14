@@ -158,6 +158,51 @@ static void cmd_regs(int argc, char **argv)
                  (unsigned)UartPort_RxPos(), (unsigned long)s.bytesRx);
 }
 
+/* pintest — проверка ФИЗИЧЕСКОГО вывода PA9 отдельно от UART: PA9 переводится в обычный
+ * выход push-pull (отцепляется от AF7) и ~5 с переключается ~1 кГц — ловится осциллографом.
+ * Если меандр на PA9 есть, а посылок UART нет — виноват тракт передатчика USART1, а не пин.
+ * По окончании PA9/PA10 возвращаются в AF7 USART1 и UART переинициализируется (пины
+ * восстанавливает MspInit, приём перезапускается), консоль и обмен продолжают работать.
+ * ВАЖНО: во время теста по USART1 ничего не передаётся (иначе конфликт за пин). */
+static void cmd_pintest(int argc, char **argv)
+{
+  GPIO_InitTypeDef g = {0};
+  uint32_t ticks;
+  uint32_t t0;
+  uint32_t k;
+  (void)argc; (void)argv;
+
+  Console_Write("pintest: PA9 -> GPIO push-pull, ~1kHz toggle for ~5s (scope PA9). No USART1 TX.\r\n");
+  Console_Flush();                          /* сообщение должно уйти ДО блокирующего теста */
+
+  /* PA9 как обычный выход push-pull (перекрывает конфигурацию AF7). */
+  g.Pin   = GPIO_PIN_9;
+  g.Mode  = GPIO_MODE_OUTPUT_PP;
+  g.Pull  = GPIO_NOPULL;
+  g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOA, &g);
+
+  /* Точная задержка через счётчик циклов DWT (ядро 96 МГц): полупериод 500 мкс -> ~1 кГц. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0u;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+  ticks = (SystemCoreClock / 1000000u) * 500u;   /* циклов на 500 мкс */
+
+  for (k = 0u; k < 5000u; k++)                    /* 5000 * (0.5+0.5 мс) = ~5 с */
+  {
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+    t0 = DWT->CYCCNT; while ((DWT->CYCCNT - t0) < ticks) { }
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+    t0 = DWT->CYCCNT; while ((DWT->CYCCNT - t0) < ticks) { }
+  }
+
+  /* Вернуть PA9/PA10 в AF7 USART1 и переинициализировать UART (пины восстанавливает MspInit,
+   * приём перезапускается) — на текущей скорости, без её изменения. */
+  UartPort_SetBaud(UartPort_GetBaud());
+
+  Console_Write("pintest: done. PA9 restored to USART1 AF7, UART reinitialized.\r\n");
+}
+
 /* Таблица команд (help — встроенная в console.c, здесь не регистрируется). */
 static const console_cmd_t k_cmds[] =
 {
@@ -168,6 +213,7 @@ static const console_cmd_t k_cmds[] =
   { "dump",     "hex of last raw received bytes",           cmd_dump     },
   { "baud",     "show/set UART baud on the fly",            cmd_baud     },
   { "regs",     "dump USART1/DMA registers & rx state",     cmd_regs     },
+  { "pintest",  "toggle PA9 as GPIO ~1kHz/5s (scope test)", cmd_pintest  },
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */

@@ -23,6 +23,7 @@
 
 #include "console.h"
 #include "usbd_cdc_if.h"   /* CDC_Transmit_FS + USBD_* типы/состояния (через usbd_cdc.h) */
+#include "stm32f4xx_hal.h" /* HAL_Delay для Console_Flush */
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -210,6 +211,20 @@ void Console_Register(const console_cmd_t *cmds, uint16_t count)
 uint8_t Console_IsConfigured(void)
 {
   return (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) ? 1u : 0u;
+}
+
+void Console_Flush(void)
+{
+  uint32_t guard;
+  for (guard = 0u; guard < 300u; guard++)          /* не дольше ~300 мс */
+  {
+    if (((uint16_t)((txHead + TX_RING - txTail) % TX_RING)) == 0u)
+    {
+      break;                                        /* всё вытолкнуто */
+    }
+    tx_drain();
+    HAL_Delay(1u);                                  /* дать USB IN завершиться */
+  }
 }
 
 void Console_Init(void)
