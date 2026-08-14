@@ -266,6 +266,9 @@ static void cmd_reset(int argc, char **argv)
   (void)argc; (void)argv;
   UartPort_ResetStats();
   cRec = 0u; cSent = 0u; cTxDrop = 0u; cRecv = 0u; cLost = 0u; cPlayed = 0u; cUnder = 0u; cOver = 0u;
+  /* Счётчики протокола нашего приёмного автомата (состояние FSM не трогаем). */
+  rxDec.stats.framesRx = 0u; rxDec.stats.framesCrc = 0u;
+  rxDec.stats.resync = 0u; rxDec.stats.bytesDropped = 0u;
   Console_Write("counters reset\r\n");
 }
 
@@ -303,17 +306,31 @@ static void cmd_baud(int argc, char **argv)
   Console_Printf("baud set to %lu\r\n", (unsigned long)UartPort_GetBaud());
 }
 
-/* voice — статистика речевого тракта. Оценка задержки — расчётом по буферам (см. отчёт). */
+/* voice — статистика речевого тракта + ошибки приёмника линии. Оценка задержки — расчётом. */
 static void cmd_voice(int argc, char **argv)
 {
   unsigned lat_ms = (unsigned)(VOICE_MS + (JB_PREFILL / AUDIO_BLOCK_SAMPLES) + 2u); /* tx-накопл + prefill + кодек */
+  UartPort_Stats s;
   (void)argc; (void)argv;
+  UartPort_GetStats(&s);
   Console_Printf("voice: rec=%lu sent=%lu txdrop=%lu recv=%lu lost=%lu played=%lu under=%lu over=%lu\r\n",
                  (unsigned long)cRec, (unsigned long)cSent, (unsigned long)cTxDrop, (unsigned long)cRecv,
                  (unsigned long)cLost, (unsigned long)cPlayed, (unsigned long)cUnder, (unsigned long)cOver);
   Console_Printf("voice: jb_fill=%u/%u samples (%u ms), ptt=%s tone=%s, est one-way latency ~%u ms\r\n",
                  (unsigned)jb_fill(), (unsigned)JB_SIZE, (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
                  (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"), lat_ms);
+  Console_Printf("voice: rx errors ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+                 (unsigned long)s.errOre, (unsigned long)s.errFe,
+                 (unsigned long)s.errPe, (unsigned long)s.errNe);
+}
+
+/* proto — статистика протокола кадрирования на ПРИЁМЕ (наш rxDec). */
+static void cmd_proto(int argc, char **argv)
+{
+  (void)argc; (void)argv;
+  Console_Printf("proto: frames=%lu crc_drop=%lu resync=%lu bytes_dropped=%lu\r\n",
+                 (unsigned long)rxDec.stats.framesRx, (unsigned long)rxDec.stats.framesCrc,
+                 (unsigned long)rxDec.stats.resync, (unsigned long)rxDec.stats.bytesDropped);
 }
 
 static void cmd_ptt(int argc, char **argv)
@@ -343,8 +360,9 @@ static const console_cmd_t k_cmds[] =
   { "dump",     "hex of last raw received bytes",           cmd_dump     },
   { "regs",     "USART2 registers",                         cmd_regs     },
   { "baud",     "show/set UART baud",                       cmd_baud     },
-  { "voice",    "voice path statistics",                    cmd_voice    },
-  { "ptt",      "ptt on|off (transmit without button)",     cmd_ptt      },
+  { "voice",    "voice path stats + rx line errors",        cmd_voice    },
+  { "proto",    "framing protocol statistics (rx)",         cmd_proto    },
+  { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
   { "tone",     "tone on|off (send 1 kHz instead of mic)",  cmd_tone     },
 };
 
