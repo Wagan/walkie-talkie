@@ -226,6 +226,7 @@ uint8_t UartPort_SendByte(uint8_t b)
 uint8_t  UartPort_TxBusy(void)     { return txBusy; }
 uint16_t UartPort_PacketSize(void) { return PKT_SIZE; }
 uint32_t UartPort_GetBaud(void)    { return huart1.Init.BaudRate; }
+uint16_t UartPort_RxPos(void)      { return rxOldPos; }
 
 /* ================= ЗАПУСК/ПЕРЕЗАПУСК ПРИЁМА ================= */
 static void start_rx(void)

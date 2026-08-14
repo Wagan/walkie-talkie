@@ -57,6 +57,7 @@ uint8_t  UartPort_SendPacket(void);           /* собрать и отправ�
 uint8_t  UartPort_SendByte(uint8_t b);        /* отправить один произвольный байт (блокирующе, 1 байт); 0 — ок */
 void     UartPort_SetBaud(uint32_t baud);     /* переинициализировать USART1 на новую скорость и перезапустить приём */
 uint32_t UartPort_GetBaud(void);              /* текущая скорость */
+uint16_t UartPort_RxPos(void);                /* позиция разбора кольца (0..RING) для диагностики */
 
 /* --- Статистика и диагностика --- */
 void     UartPort_GetStats(UartPort_Stats *out);

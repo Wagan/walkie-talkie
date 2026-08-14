@@ -30,6 +30,10 @@
 #include "stm32f411e_discovery.h"   /* светодиоды BSP_LED_* */
 #include <stdlib.h>                 /* strtoul */
 
+/* Дескрипторы, созданные CubeMX в main.c — для диагностической команды regs. */
+extern UART_HandleTypeDef huart1;
+extern DMA_HandleTypeDef  hdma_usart1_rx;
+
 /* ================= ОБРАБОТЧИКИ КОМАНД ================= */
 
 /* send [n] — отправить n тестовых пакетов (по умолчанию 1). */
@@ -137,6 +141,23 @@ static void cmd_baud(int argc, char **argv)
   Console_Printf("baud set to %lu, rx restarted\r\n", (unsigned long)UartPort_GetBaud());
 }
 
+/* regs — регистры и состояние приёмника USART1/DMA в hex (плата печатает их сама, т.к.
+ * при остановке ядра отладчиком отваливается виртуальный COM). Имена — из CMSIS. */
+static void cmd_regs(int argc, char **argv)
+{
+  UartPort_Stats s;
+  (void)argc; (void)argv;
+  UartPort_GetStats(&s);
+  Console_Printf("USART1: SR=%08lX CR1=%08lX CR3=%08lX | RxState=%02lX gState=%02lX err=%08lX\r\n",
+                 (unsigned long)USART1->SR, (unsigned long)USART1->CR1, (unsigned long)USART1->CR3,
+                 (unsigned long)huart1.RxState, (unsigned long)huart1.gState,
+                 (unsigned long)huart1.ErrorCode);
+  Console_Printf("DMA2S2: CR=%08lX NDTR=%08lX | State=%02lX err=%08lX | rxPos=%u bytesRx=%lu\r\n",
+                 (unsigned long)DMA2_Stream2->CR, (unsigned long)DMA2_Stream2->NDTR,
+                 (unsigned long)hdma_usart1_rx.State, (unsigned long)hdma_usart1_rx.ErrorCode,
+                 (unsigned)UartPort_RxPos(), (unsigned long)s.bytesRx);
+}
+
 /* Таблица команд (help — встроенная в console.c, здесь не регистрируется). */
 static const console_cmd_t k_cmds[] =
 {
@@ -146,6 +167,7 @@ static const console_cmd_t k_cmds[] =
   { "reset",    "reset counters",                           cmd_reset    },
   { "dump",     "hex of last raw received bytes",           cmd_dump     },
   { "baud",     "show/set UART baud on the fly",            cmd_baud     },
+  { "regs",     "dump USART1/DMA registers & rx state",     cmd_regs     },
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
