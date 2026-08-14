@@ -2,7 +2,7 @@
   ******************************************************************************
   * @file    App/Common/Src/uart_port.c
   * @author  Wagan Sarukhanov
-  * @brief   Общий транспорт по USART1 (реализация). См. uart_port.h.
+  * @brief   Общий транспорт по USART2 (реализация). См. uart_port.h.
   *
   * Copyright (c) 1991-2026 NCPR LLC (Flexlab). All rights reserved.
   ******************************************************************************
@@ -21,8 +21,8 @@
 #include "stm32f4xx_hal.h"          /* HAL UART/UARTEx + HAL_GetTick */
 #include <string.h>
 
-/* huart1 создан CubeMX в main.c (USART1, 8N1, OVER16, DMA2 Stream2 RX circular). */
-extern UART_HandleTypeDef huart1;
+/* huart2 создан CubeMX в main.c (USART2, 8N1, OVER16, DMA1 Stream5 RX circular). */
+extern UART_HandleTypeDef huart2;
 
 /* ================= ФОРМАТ ПАКЕТА =================
  * Пакет фиксированного размера, поля фиксированной ширины, структура __packed (раскладка
@@ -201,7 +201,7 @@ uint8_t UartPort_SendPacket(void)
   txpkt.crc = crc16((const uint8_t *)&txpkt, (uint32_t)(PKT_SIZE - 2u));
 
   txBusy = 1u;
-  if (HAL_UART_Transmit_IT(&huart1, (const uint8_t *)&txpkt, PKT_SIZE) != HAL_OK)
+  if (HAL_UART_Transmit_IT(&huart2, (const uint8_t *)&txpkt, PKT_SIZE) != HAL_OK)
   {
     txBusy = 0u;
     return 2u;
@@ -215,7 +215,7 @@ uint8_t UartPort_SendByte(uint8_t b)
 {
   /* Один байт — блокирующе (при 115200 ~87 мкс), чтобы не конфликтовать с txBusy пакетной
    * передачи. Приём по DMA при этом продолжается (полный дуплекс). */
-  if (HAL_UART_Transmit(&huart1, &b, 1u, 100u) != HAL_OK)
+  if (HAL_UART_Transmit(&huart2, &b, 1u, 100u) != HAL_OK)
   {
     return 1u;
   }
@@ -225,7 +225,7 @@ uint8_t UartPort_SendByte(uint8_t b)
 
 uint8_t  UartPort_TxBusy(void)     { return txBusy; }
 uint16_t UartPort_PacketSize(void) { return PKT_SIZE; }
-uint32_t UartPort_GetBaud(void)    { return huart1.Init.BaudRate; }
+uint32_t UartPort_GetBaud(void)    { return huart2.Init.BaudRate; }
 uint16_t UartPort_RxPos(void)      { return rxOldPos; }
 
 /* ================= ЗАПУСК/ПЕРЕЗАПУСК ПРИЁМА ================= */
@@ -234,7 +234,7 @@ static void start_rx(void)
   rxOldPos  = 0u;
   asmLen    = 0u;
   wasSynced = 0u;
-  (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rxRing, RX_RING_SIZE);
+  (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart2, rxRing, RX_RING_SIZE);
 }
 
 void UartPort_Init(void)
@@ -246,9 +246,9 @@ void UartPort_SetBaud(uint32_t baud)
 {
   /* Полный корректный реинит: DeInit (MspDeInit: DMA/NVIC снимаются) -> смена скорости ->
    * Init (MspInit: DMA/NVIC/пины восстанавливаются генерируемым кодом) -> перезапуск приёма. */
-  (void)HAL_UART_DeInit(&huart1);
-  huart1.Init.BaudRate = baud;
-  (void)HAL_UART_Init(&huart1);
+  (void)HAL_UART_DeInit(&huart2);
+  huart2.Init.BaudRate = baud;
+  (void)HAL_UART_Init(&huart2);
   start_rx();
 }
 
@@ -304,11 +304,11 @@ uint16_t UartPort_Dump(uint8_t *dst, uint16_t max)
   return n;
 }
 
-/* ================= HAL-КОЛБЭКИ USART1 (ISR — БЕЗ печати) ================= */
+/* ================= HAL-КОЛБЭКИ USART2 (ISR — БЕЗ печати) ================= */
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance != USART1) { return; }
+  if (huart->Instance != USART2) { return; }
   txBusy = 0u;
   UartPort_OnTxDone();
 }
@@ -317,7 +317,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   uint16_t i;
 
-  if (huart->Instance != USART1) { return; }
+  if (huart->Instance != USART2) { return; }
 
   if (Size != rxOldPos)
   {
@@ -363,7 +363,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   uint32_t ec;
 
-  if (huart->Instance != USART1) { return; }
+  if (huart->Instance != USART2) { return; }
   ec = huart->ErrorCode;
   if ((ec & HAL_UART_ERROR_ORE) != 0u) { cErrOre++; }
   if ((ec & HAL_UART_ERROR_FE)  != 0u) { cErrFe++;  }

@@ -3,15 +3,15 @@
   * @file    App/Labs/usb_console.c
   * @author  Wagan Sarukhanov
   * @brief   LAB05 «Консоль по USB CDC»: двусторонний канал с ПК для ручного управления
-  *          обменом по USART1 и наблюдения за линией. Реализует Lab_Init/Lab_Process.
+  *          обменом по USART2 и наблюдения за линией. Реализует Lab_Init/Lab_Process.
   *
   * Copyright (c) 1991-2026 NCPR LLC (Flexlab). All rights reserved.
   ******************************************************************************
   * Компилируется только в конфигурации LAB05 (LAB_ID == 5) — весь файл обёрнут ниже.
   *
   * Цель работы — дать инструмент отладки провода: вместо угадывания по светодиодам можно
-  * подавать команды и видеть, что реально приходит по USART1 (команда dump — сырые байты
-  * ДО разбора). Приём USART1 — общий модуль App/Common/uart_port.c (кольцевой DMA + IDLE),
+  * подавать команды и видеть, что реально приходит по USART2 (команда dump — сырые байты
+  * ДО разбора). Приём USART2 — общий модуль App/Common/uart_port.c (кольцевой DMA + IDLE),
   * тот же, что в LAB02. Консоль — общий модуль App/Common/console.c поверх USB CDC.
   *
   * NB: команды send/sendbyte могут коротко подождать готовности передатчика (ограниченный
@@ -31,8 +31,8 @@
 #include <stdlib.h>                 /* strtoul */
 
 /* Дескрипторы, созданные CubeMX в main.c — для диагностической команды regs. */
-extern UART_HandleTypeDef huart1;
-extern DMA_HandleTypeDef  hdma_usart1_rx;
+extern UART_HandleTypeDef huart2;
+extern DMA_HandleTypeDef  hdma_usart2_rx;
 
 /* ================= ОБРАБОТЧИКИ КОМАНД ================= */
 
@@ -141,42 +141,54 @@ static void cmd_baud(int argc, char **argv)
   Console_Printf("baud set to %lu, rx restarted\r\n", (unsigned long)UartPort_GetBaud());
 }
 
-/* regs — регистры и состояние приёмника USART1/DMA в hex (плата печатает их сама, т.к.
+/* regs — регистры и состояние приёмника USART2/DMA в hex (плата печатает их сама, т.к.
  * при остановке ядра отладчиком отваливается виртуальный COM). Имена — из CMSIS. */
 static void cmd_regs(int argc, char **argv)
 {
   UartPort_Stats s;
   (void)argc; (void)argv;
   UartPort_GetStats(&s);
-  Console_Printf("USART1: SR=%08lX CR1=%08lX CR3=%08lX | RxState=%02lX gState=%02lX err=%08lX\r\n",
-                 (unsigned long)USART1->SR, (unsigned long)USART1->CR1, (unsigned long)USART1->CR3,
-                 (unsigned long)huart1.RxState, (unsigned long)huart1.gState,
-                 (unsigned long)huart1.ErrorCode);
-  Console_Printf("DMA2S2: CR=%08lX NDTR=%08lX | State=%02lX err=%08lX | rxPos=%u bytesRx=%lu\r\n",
-                 (unsigned long)DMA2_Stream2->CR, (unsigned long)DMA2_Stream2->NDTR,
-                 (unsigned long)hdma_usart1_rx.State, (unsigned long)hdma_usart1_rx.ErrorCode,
+  Console_Printf("USART2: SR=%08lX CR1=%08lX CR3=%08lX | RxState=%02lX gState=%02lX err=%08lX\r\n",
+                 (unsigned long)USART2->SR, (unsigned long)USART2->CR1, (unsigned long)USART2->CR3,
+                 (unsigned long)huart2.RxState, (unsigned long)huart2.gState,
+                 (unsigned long)huart2.ErrorCode);
+  Console_Printf("DMA1S5: CR=%08lX NDTR=%08lX | State=%02lX err=%08lX | rxPos=%u bytesRx=%lu\r\n",
+                 (unsigned long)DMA1_Stream5->CR, (unsigned long)DMA1_Stream5->NDTR,
+                 (unsigned long)hdma_usart2_rx.State, (unsigned long)hdma_usart2_rx.ErrorCode,
                  (unsigned)UartPort_RxPos(), (unsigned long)s.bytesRx);
 }
 
-/* pintest — проверка ФИЗИЧЕСКОГО вывода PA9 отдельно от UART: PA9 переводится в обычный
- * выход push-pull (отцепляется от AF7) и ~5 с переключается ~1 кГц — ловится осциллографом.
- * Если меандр на PA9 есть, а посылок UART нет — виноват тракт передатчика USART1, а не пин.
- * По окончании PA9/PA10 возвращаются в AF7 USART1 и UART переинициализируется (пины
- * восстанавливает MspInit, приём перезапускается), консоль и обмен продолжают работать.
- * ВАЖНО: во время теста по USART1 ничего не передаётся (иначе конфликт за пин). */
+/* pintest [pin] — проверка ФИЗИЧЕСКОГО вывода отдельно от UART. Вывод PAx переводится в
+ * обычный выход push-pull (отцепляется от AF) и ~5 с переключается ~1 кГц — ловится
+ * осциллографом. Если меандр на пине есть, а посылок UART нет — виноват тракт передатчика,
+ * а не пин (так и выяснилось про PA9: его держит остаточная VBUS-цепь платы).
+ * По умолчанию проверяется PA2 (USART2_TX). Можно указать другой вывод GPIOA: `pintest 9`.
+ * По окончании PA2/PA3 возвращаются в AF7 USART2 переинициализацией UART (пины восстанавливает
+ * MspInit, приём перезапускается); прочие проверенные выводы остаются в режиме выхода.
+ * ВАЖНО: во время теста по USART2 ничего не передаётся (иначе конфликт за пин). */
 static void cmd_pintest(int argc, char **argv)
 {
   GPIO_InitTypeDef g = {0};
+  unsigned long pin = 2ul;                        /* по умолчанию PA2 (USART2_TX) */
+  uint16_t pinMask;
   uint32_t ticks;
   uint32_t t0;
   uint32_t k;
-  (void)argc; (void)argv;
 
-  Console_Write("pintest: PA9 -> GPIO push-pull, ~1kHz toggle for ~5s (scope PA9). No USART1 TX.\r\n");
-  Console_Flush();                          /* сообщение должно уйти ДО блокирующего теста */
+  if (argc > 1) { pin = strtoul(argv[1], NULL, 0); }
+  if (pin > 15ul)
+  {
+    Console_Write("pintest: pin must be 0..15 (GPIOA)\r\n");
+    return;
+  }
+  pinMask = (uint16_t)(1u << pin);
 
-  /* PA9 как обычный выход push-pull (перекрывает конфигурацию AF7). */
-  g.Pin   = GPIO_PIN_9;
+  Console_Printf("pintest: PA%lu -> GPIO push-pull, ~1kHz toggle for ~5s (scope PA%lu). No USART2 TX.\r\n",
+                 pin, pin);
+  Console_Flush();                                /* сообщение должно уйти ДО блокирующего теста */
+
+  /* PAx как обычный выход push-pull (перекрывает конфигурацию AF). */
+  g.Pin   = pinMask;
   g.Mode  = GPIO_MODE_OUTPUT_PP;
   g.Pull  = GPIO_NOPULL;
   g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -186,21 +198,21 @@ static void cmd_pintest(int argc, char **argv)
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0u;
   DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
-  ticks = (SystemCoreClock / 1000000u) * 500u;   /* циклов на 500 мкс */
+  ticks = (SystemCoreClock / 1000000u) * 500u;    /* циклов на 500 мкс */
 
-  for (k = 0u; k < 5000u; k++)                    /* 5000 * (0.5+0.5 мс) = ~5 с */
+  for (k = 0u; k < 5000u; k++)                     /* 5000 * (0.5+0.5 мс) = ~5 с */
   {
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, pinMask, GPIO_PIN_SET);
     t0 = DWT->CYCCNT; while ((DWT->CYCCNT - t0) < ticks) { }
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOA, pinMask, GPIO_PIN_RESET);
     t0 = DWT->CYCCNT; while ((DWT->CYCCNT - t0) < ticks) { }
   }
 
-  /* Вернуть PA9/PA10 в AF7 USART1 и переинициализировать UART (пины восстанавливает MspInit,
+  /* Вернуть PA2/PA3 в AF7 USART2 и переинициализировать UART (пины восстанавливает MspInit,
    * приём перезапускается) — на текущей скорости, без её изменения. */
   UartPort_SetBaud(UartPort_GetBaud());
 
-  Console_Write("pintest: done. PA9 restored to USART1 AF7, UART reinitialized.\r\n");
+  Console_Printf("pintest: done. USART2 (PA2/PA3) restored, UART reinitialized.\r\n");
 }
 
 /* Таблица команд (help — встроенная в console.c, здесь не регистрируется). */
@@ -212,8 +224,8 @@ static const console_cmd_t k_cmds[] =
   { "reset",    "reset counters",                           cmd_reset    },
   { "dump",     "hex of last raw received bytes",           cmd_dump     },
   { "baud",     "show/set UART baud on the fly",            cmd_baud     },
-  { "regs",     "dump USART1/DMA registers & rx state",     cmd_regs     },
-  { "pintest",  "toggle PA9 as GPIO ~1kHz/5s (scope test)", cmd_pintest  },
+  { "regs",     "dump USART2/DMA registers & rx state",     cmd_regs     },
+  { "pintest",  "toggle PA[n] GPIO ~1kHz/5s (def PA2)",     cmd_pintest  },
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
@@ -228,11 +240,11 @@ uint8_t Lab_Init(void)
   Console_Init();
   Console_Register(k_cmds, (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0])));
 
-  /* Приём USART1 — общий кольцевой DMA (как в LAB02). Прерывания включены генератором. */
+  /* Приём USART2 — общий кольцевой DMA (как в LAB02). Прерывания включены генератором. */
   UartPort_Init();
 
   /* Баннер: в SWO (сразу) и в USB (выведется, как только хост откроет порт). */
-  TRACE_LOG("LAB05 USB console: type 'help'. USART1 %lu 8N1, packet=%u B",
+  TRACE_LOG("LAB05 USB console: type 'help'. USART2 %lu 8N1, packet=%u B",
             (unsigned long)UartPort_GetBaud(), (unsigned)UartPort_PacketSize());
   Console_Write("\r\nLAB05 USB console ready. Type 'help'.\r\n");
   return 0u;

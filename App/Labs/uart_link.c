@@ -2,14 +2,14 @@
   ******************************************************************************
   * @file    App/Labs/uart_link.c
   * @author  Wagan Sarukhanov
-  * @brief   LAB02 «Провод между китами»: байтовый обмен пакетами по USART1, статистика и
+  * @brief   LAB02 «Провод между китами»: байтовый обмен пакетами по USART2, статистика и
   *          измерение пропускной способности/задержки. Реализует Lab_Init/Lab_Process.
   *
   * Copyright (c) 1991-2026 NCPR LLC (Flexlab). All rights reserved.
   ******************************************************************************
   * Компилируется только в конфигурации LAB02 (LAB_ID == 2) — весь файл обёрнут ниже.
   *
-  * Весь транспорт по USART1 (приём кольцевым DMA+IDLE, сборка пакетов, ресинхронизация,
+  * Весь транспорт по USART2 (приём кольцевым DMA+IDLE, сборка пакетов, ресинхронизация,
   * статистика, передача) вынесен в общий модуль App/Common/uart_port.c, чтобы им
   * пользовалась и LAB05 (консоль). Здесь остаётся только специфика LAB02: индикация
   * светодиодами, режимы PERIODIC/LOAD и печать статистики по SWO.
@@ -23,7 +23,7 @@
 
 #if LAB_ID == 2
 
-#include "uart_port.h"              /* общий транспорт USART1 */
+#include "uart_port.h"              /* общий транспорт USART2 */
 #include "stm32f4xx_hal.h"          /* HAL_GetTick */
 #include "stm32f411e_discovery.h"   /* светодиоды BSP_LED_* */
 #include "trace_log.h"              /* TRACE_LOG (ASCII, только вне ISR) */
@@ -81,7 +81,7 @@ uint8_t Lab_Init(void)
   BSP_LED_Off(LED4);
   BSP_LED_Off(LED5);
 
-  /* Прерывания USART1 и DMA2 Stream2 включены сгенерированным кодом. Запускаем приём. */
+  /* Прерывания USART2 и DMA1 Stream5 включены сгенерированным кодом. Запускаем приём. */
   UartPort_Init();
 
   TRACE_LOG("LAB02 uart link (RX: circular DMA + IDLE): 115200 8N1, packet=%u B (payload %u), mode=%s",
