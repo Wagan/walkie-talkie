@@ -15,7 +15,7 @@
 
 #include "lab.h"   /* LAB_ID + его проверка (единая точка правды) */
 
-#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 5)
+#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5)
 
 #include "uart_port.h"
 #include "frame.h"                  /* кадрирование SLIP (режим LAB03) */
@@ -64,6 +64,13 @@ static uint16_t       g_corruptK  = 32u;
 static uint32_t       g_txByteCtr = 0u;    /* сквозной счётчик отправленных байт (для порчи) */
 static uartport_fpl_t g_ftx;               /* исходящая нагрузка кадра */
 static uint8_t        g_ftxBuf[FRAME_ENC_MAX];  /* закодированный кадр (живёт во время Transmit_IT) */
+
+/* ===== Сырой кадровый транспорт (LAB04, речь) ===== */
+/* Отправка уже закодированного кадра произвольной длины (копируется, чтобы жить во время
+ * Transmit_IT) и перехват принятых байт (LAB04 ведёт СВОЙ разбор кадров речи). */
+#define RAW_TX_MAX   512u
+static uint8_t  g_rawTx[RAW_TX_MAX];       /* копия исходящего кадра на время Transmit_IT */
+static void   (*g_rxTap)(uint8_t) = 0;     /* если задан — принятые байты идут только сюда */
 
 /* ================= ПРИЁМНЫЙ КОЛЬЦЕВОЙ БУФЕР (DMA) =================
  * 256 байт (~8 пакетов): половина кольца (128 Б) на пределе линии 11520 Б/с набегает за
@@ -225,6 +232,7 @@ static void dump_put(uint8_t b)
 static void rx_byte(uint8_t b)
 {
   dump_put(b);
+  if (g_rxTap != 0)    { g_rxTap(b); return; }     /* LAB04: свой разбор кадров речи */
   if (g_framing != 0u) { Frame_DecodeByte(&g_dec, b, frame_sink); }
   else                 { feed_byte(b); }
 }
@@ -316,6 +324,27 @@ uint8_t UartPort_SendByte(uint8_t b)
   bytesTx += 1u;
   return 0u;
 }
+
+/* Отправить уже готовый (закодированный) кадр произвольной длины — для речи LAB04.
+ * Копирует в свой буфер (живёт во время Transmit_IT). 0 — поставлено, 1 — занято, 2 — ошибка. */
+uint8_t UartPort_SendRaw(const uint8_t *buf, uint16_t len)
+{
+  uint16_t i;
+  if ((buf == NULL) || (len == 0u) || (len > RAW_TX_MAX)) { return 2u; }
+  if (txBusy != 0u) { return 1u; }
+  for (i = 0u; i < len; i++) { g_rawTx[i] = buf[i]; }
+  txBusy = 1u;
+  if (HAL_UART_Transmit_IT(&huart2, g_rawTx, len) != HAL_OK)
+  {
+    txBusy = 0u;
+    return 2u;
+  }
+  bytesTx += len;
+  return 0u;
+}
+
+/* Перехват принятых байт: если cb != NULL, приём идёт ТОЛЬКО в него (LAB04 — свой разбор). */
+void UartPort_SetRxTap(void (*cb)(uint8_t)) { g_rxTap = cb; }
 
 uint8_t  UartPort_TxBusy(void)     { return txBusy; }
 uint16_t UartPort_PacketSize(void) { return PKT_SIZE; }

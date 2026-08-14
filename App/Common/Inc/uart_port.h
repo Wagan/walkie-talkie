@@ -55,6 +55,8 @@ uint16_t UartPort_PacketSize(void);           /* размер пакета в б
 uint8_t  UartPort_TxBusy(void);               /* идёт неблокирующая передача пакета */
 uint8_t  UartPort_SendPacket(void);           /* собрать и отправить один тестовый пакет; 0 — поставлено */
 uint8_t  UartPort_SendByte(uint8_t b);        /* отправить один произвольный байт (блокирующе, 1 байт); 0 — ок */
+uint8_t  UartPort_SendRaw(const uint8_t *buf, uint16_t len); /* отправить готовый кадр (LAB04); 0 ок/1 занято/2 ошибка */
+void     UartPort_SetRxTap(void (*cb)(uint8_t)); /* перехват принятых байт (LAB04 — свой разбор кадров) */
 void     UartPort_SetBaud(uint32_t baud);     /* переинициализировать USART2 на новую скорость и перезапустить приём */
 uint32_t UartPort_GetBaud(void);              /* текущая скорость */
 uint16_t UartPort_RxPos(void);                /* позиция разбора кольца (0..RING) для диагностики */
