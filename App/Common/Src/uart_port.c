@@ -245,23 +245,22 @@ static void apply_corrupt(uint8_t *buf, uint16_t len)
   }
 }
 
-/* Заполнить общие поля исходящей нагрузки (seq/t_tx/t_echo/payload). */
-static void fill_tx_fields(uint32_t *seq, uint32_t *ttx, uint32_t *techo, uint8_t *pl)
-{
-  uint16_t i;
-  *seq   = cTx;
-  *ttx   = HAL_GetTick();
-  *techo = (haveRemote != 0u) ? remoteTx : 0u;
-  for (i = 0u; i < UARTPORT_PAYLOAD_SIZE; i++)
-  {
-    pl[i] = (uint8_t)(0xA0u + (i & 0x0Fu));
-  }
-}
+/* Заполнить общие поля исходящей нагрузки ПРЯМЫМ присваиванием (P — lvalue структуры с полями
+ * seq/t_tx/t_echo/payload). Через макрос, а не функцию с указателями: взятие адреса поля
+ * packed-структуры даёт предупреждение -Waddress-of-packed-member, а прямое присваивание — нет. */
+#define FILL_TX_FIELDS(P) do {                                                       \
+    uint16_t _i;                                                                     \
+    (P).seq    = cTx;                                                                \
+    (P).t_tx   = HAL_GetTick();                                                      \
+    (P).t_echo = (haveRemote != 0u) ? remoteTx : 0u;                                 \
+    for (_i = 0u; _i < UARTPORT_PAYLOAD_SIZE; _i++)                                   \
+    { (P).payload[_i] = (uint8_t)(0xA0u + (_i & 0x0Fu)); }                            \
+  } while (0)
 
 /* Старая схема: пакет фиксированной длины с собственной CRC. */
 static uint8_t send_legacy(void)
 {
-  fill_tx_fields(&txpkt.seq, &txpkt.t_tx, &txpkt.t_echo, txpkt.payload);
+  FILL_TX_FIELDS(txpkt);
   txpkt.crc = crc16((const uint8_t *)&txpkt, (uint32_t)(PKT_SIZE - 2u));
 
   apply_corrupt((uint8_t *)&txpkt, PKT_SIZE);
@@ -280,7 +279,7 @@ static uint8_t send_legacy(void)
 static uint8_t send_framed(void)
 {
   uint16_t enc;
-  fill_tx_fields(&g_ftx.seq, &g_ftx.t_tx, &g_ftx.t_echo, g_ftx.payload);
+  FILL_TX_FIELDS(g_ftx);
 
   enc = Frame_Encode((const uint8_t *)&g_ftx, FPL_SIZE, g_ftxBuf, (uint16_t)sizeof(g_ftxBuf));
   if (enc == 0u) { return 2u; }
