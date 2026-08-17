@@ -14,6 +14,9 @@
   * распаковки — декодируется. В кадре передаётся признак кодека и частоты, чтобы приёмник
   * знал, чем и как раскодировать. Частота 8 кГц реализована ПРОГРАММНЫМ децимированием
   * 16→8 (BSP остаётся на 16 кГц — его буферы/PDM жёстко под 16 кГц, см. отчёт, задача A).
+  * Децимация — линейно-фазовым FIR-НЧ (антиалиас ~3.6 кГц, decim fir) с возможностью вернуть
+  * старое усреднение пар (decim avg) для сравнения. Это подготовка к Codec2: вокодер
+  * анализирует спектр, и алиасинг слабой децимации портил бы разборчивость.
   * Воспроизведение всегда 16 кГц (аппаратный тракт неизменен): принятый 8-кГц звук
   * интерполируется обратно в 16 кГц.
   *
@@ -52,9 +55,17 @@
 #define RATE_8K         0u
 #define RATE_16K        1u
 
+/* Антиалиас-фильтр децимации 16→8 (см. docs/REPORT_codec2_recon.md и REPORT_aa_decim.md).
+ * Старый способ (усреднение пар) — очень слабый НЧ: тон 5 кГц проходил и отражался в 3 кГц.
+ * Новый — линейно-фазовый FIR-НЧ перед прореживанием 2:1. Оба доступны (команда decim). */
+#define AA_TAPS         31u                      /* тапов FIR (нечётное → линейная фаза, тип I) */
+#define DECIM_AVG       0u                       /* старый способ: усреднение пар */
+#define DECIM_FIR       1u                       /* новый: FIR-НЧ ~3.6 кГц + прореживание */
+
 /* ================= НАСТРОЙКИ (по умолчанию) ================= */
 static volatile uint8_t  g_codec = (uint8_t)CODEC_ADPCM; /* кодек по умолчанию */
 static volatile uint8_t  g_rate  = RATE_16K;             /* частота по умолчанию */
+static volatile uint8_t  g_decim = DECIM_FIR;            /* метод децимации 16→8 (по умолч. FIR) */
 static volatile uint8_t  g_ptt   = 0u;
 static volatile uint8_t  g_tone  = 0u;
 static volatile uint16_t g_toneHz = 1000u;              /* частота тона (Гц), по умолчанию 1 кГц */
@@ -70,6 +81,19 @@ static uint8_t  txEnc[ENC_MAX];
 static const int16_t toneLUT[16] =
 { 0, 3062, 5657, 7391, 8000, 7391, 5657, 3062, 0, -3062, -5657, -7391, -8000, -7391, -5657, -3062 };
 static uint32_t tonePhaseAcc = 0u;   /* фаза NCO (Q32); индекс = биты 31..28, дробь — 27..12 */
+
+/* FIR-НЧ антиалиас для децимации 16→8 (Q15, окно Хэмминга, fc≈3600 Гц @16 кГц).
+ * АЧХ (проверено численно): 0..3 кГц ≈ 0 дБ, 3.4 кГц −3.2 дБ, 4.0 кГц −16.6 дБ,
+ * 4.6 кГц −54 дБ, 5.0 кГц −60 дБ, 6..8 кГц −64..−78 дБ. Симметричен (линейная фаза,
+ * групповая задержка 15 отсчётов 16 кГц). Сумма = 32768 → единичное усиление по DC. */
+static const int16_t aaCoef[AA_TAPS] =
+{
+      39,     54,    -44,   -138,     34,    323,     72,   -609,
+    -397,    957,   1133,  -1296,  -2819,   1544,  10175,  14712,
+   10175,   1544,  -2819,  -1296,   1133,    957,   -397,   -609,
+      72,    323,     34,   -138,    -44,     54,     39,
+};
+static int16_t aaHist[AA_TAPS - 1u];   /* хвост предыдущего блока 16 кГц (непрерывность FIR) */
 
 /* ================= ПРИЁМ / ДЖИТТЕР-БУФЕР (16 кГц) ================= */
 static Frame_Decoder     rxDec;
@@ -111,45 +135,67 @@ static void jb_push_silence(uint16_t n)
   }
 }
 
+/* Антиалиас-децимация 16→8: FIR-НЧ (aaCoef) по блоку 16 кГц с переносом истории между
+ * блоками, затем прореживание 2:1. Именно это убирает алиасинг (тон 5 кГц свернулся бы в
+ * 3 кГц при простом усреднении). Вычисляем выход только в нужных (чётных) позициях. */
+static void aa_decimate(const int16_t *src16, int16_t *out8)
+{
+  int16_t  ext[(AA_TAPS - 1u) + SAMP16];   /* история (N−1) + текущий блок */
+  uint16_t m, k;
+
+  for (k = 0u; k < (AA_TAPS - 1u); k++) { ext[k] = aaHist[k]; }
+  for (k = 0u; k < SAMP16; k++)          { ext[(AA_TAPS - 1u) + k] = src16[k]; }
+
+  for (m = 0u; m < SAMP8; m++)
+  {
+    int32_t acc = 0;
+    const int16_t *w = &ext[2u * m];
+    for (k = 0u; k < AA_TAPS; k++) { acc += (int32_t)aaCoef[k] * (int32_t)w[k]; }
+    acc >>= 15;                            /* Q15 → целое */
+    if (acc > 32767) { acc = 32767; } else if (acc < -32768) { acc = -32768; }  /* насыщение */
+    out8[m] = (int16_t)acc;
+  }
+  /* сохранить последние (N−1) отсчётов блока как историю для следующего вызова */
+  for (k = 0u; k < (AA_TAPS - 1u); k++) { aaHist[k] = src16[SAMP16 - (AA_TAPS - 1u) + k]; }
+}
+
 /* ================= ПЕРЕДАЧА: кодирование блока и отправка (аудио-ISR) ================= */
 static void tx_flush(void)
 {
+  int16_t  src16[SAMP16];              /* блок на ВХОДНОЙ частоте 16 кГц (микрофон или тон) */
   int16_t  work[SAMP16];               /* блок на РАБОЧЕЙ частоте (80 @16кГц или 40 @8кГц) */
   uint16_t nsamp;
-  uint32_t workRate;
   uint16_t enc, frameLen, i;
   uint32_t t0;
 
-  if (g_rate == RATE_8K)               /* децимация 16→8 (усреднение пар) */
-  {
-    for (i = 0u; i < SAMP8; i++) { work[i] = (int16_t)(((int32_t)acc16[2u * i] + acc16[2u * i + 1u]) / 2); }
-    nsamp = SAMP8; workRate = 8000u;
-  }
-  else
-  {
-    for (i = 0u; i < SAMP16; i++) { work[i] = acc16[i]; }
-    nsamp = SAMP16; workRate = 16000u;
-  }
-
+  /* 1) Сформировать блок 16 кГц. Тон генерируется на ВХОДНОЙ частоте (16 кГц) фазовым
+   *    аккумулятором (inc = g_toneHz/16000), поэтому он проходит ЧЕРЕЗ антиалиас-фильтр —
+   *    только так тест «тон 5 кГц при rate 8000» реально проверяет фильтр (иначе NCO на
+   *    8 кГц свернул бы 5→3 кГц ещё до децимации). Слышимая частота = g_toneHz НЕЗАВИСИМО
+   *    от rate (для полосных тонов); фаза непрерывна и при смене rate (inc постоянен). */
   if (g_tone != 0u)
   {
-    /* Тон генерируется на РАБОЧЕЙ частоте фазовым аккумулятором: приращение фазы за отсчёт =
-     * g_toneHz/workRate, поэтому слышимая частота = g_toneHz Гц НЕЗАВИСИМО от rate (раньше
-     * таблица шла на 1 запись/отсчёт и на 8 кГц давала 500 Гц вместо 1000). Полоса ограничена
-     * workRate/2: на 8 кГц тон выше 4 кГц не проходит (алиасинг слышен — проверка полосы).
-     * Фаза непрерывна между блоками и при смене rate (inc пересчитывается каждый блок),
-     * поэтому тон не сбивается. Отсчёт = линейная интерполяция 16-точечной синус-таблицы. */
-    uint32_t inc = (uint32_t)(((uint64_t)g_toneHz << 32) / workRate);
-    for (i = 0u; i < nsamp; i++)
+    uint32_t inc = (uint32_t)(((uint64_t)g_toneHz << 32) / 16000u);
+    for (i = 0u; i < SAMP16; i++)
     {
       uint32_t idx  = tonePhaseAcc >> 28;
       int32_t  frac = (int32_t)((tonePhaseAcc >> 12) & 0xFFFFu);
       int16_t  a = toneLUT[idx];
       int16_t  b = toneLUT[(idx + 1u) & 0x0Fu];
-      work[i] = (int16_t)(a + (int16_t)((((int32_t)(b - a)) * frac) >> 16));
+      src16[i] = (int16_t)(a + (int16_t)((((int32_t)(b - a)) * frac) >> 16));
       tonePhaseAcc += inc;
     }
   }
+  else { for (i = 0u; i < SAMP16; i++) { src16[i] = acc16[i]; } }
+
+  /* 2) 8 кГц — децимация 16→8 (FIR-антиалиас или старое усреднение); 16 кГц — без изменений. */
+  if (g_rate == RATE_8K)
+  {
+    if (g_decim == DECIM_FIR) { aa_decimate(src16, work); }
+    else { for (i = 0u; i < SAMP8; i++) { work[i] = (int16_t)(((int32_t)src16[2u * i] + src16[2u * i + 1u]) / 2); } }
+    nsamp = SAMP8;
+  }
+  else { for (i = 0u; i < SAMP16; i++) { work[i] = src16[i]; } nsamp = SAMP16; }
 
   t0 = DWT->CYCCNT;
   enc = Codec_Encode((codec_id_t)g_codec, work, nsamp, txPayload + VOICE_HDR,
@@ -331,8 +377,9 @@ static void cmd_voice(int argc, char **argv)
   Console_Printf("voice: rec=%lu sent=%lu txdrop=%lu recv=%lu lost=%lu played=%lu under=%lu over=%lu\r\n",
                  (unsigned long)cRec, (unsigned long)cSent, (unsigned long)cTxDrop, (unsigned long)cRecv,
                  (unsigned long)cLost, (unsigned long)cPlayed, (unsigned long)cUnder, (unsigned long)cOver);
-  Console_Printf("voice: codec=%s rate=%u Hz jb_fill=%u (%u ms) ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+  Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
                  Codec_Name((codec_id_t)g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
+                 (g_decim == DECIM_FIR) ? "fir" : "avg",
                  (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
                  (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
                  (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
@@ -351,8 +398,9 @@ static void cmd_ptt(int argc, char **argv)
   else { Console_Write("usage: ptt on|off\r\n"); return; }
   Console_Printf("ptt(cmd) = %s\r\n", g_pttCmd ? "on" : "off");
 }
-/* tone on [freq] | off — тон на РАБОЧЕЙ частоте; freq по умолчанию 1000 Гц. Частота
- * задаётся, чтобы проверить полосу: на 8 кГц всё выше 4 кГц не проходит (алиасинг). */
+/* tone on [freq] | off — тон на ВХОДНОЙ частоте 16 кГц (проходит через децимацию); freq по
+ * умолчанию 1000 Гц. Тест фильтра: tone on 5000 + rate 8000 при decim fir не проходит
+ * (−60 дБ), а при decim avg отражается в 3 кГц — слышимая разница до/после фильтра. */
 static void cmd_tone(int argc, char **argv)
 {
   if (argc < 2)
@@ -387,6 +435,21 @@ static void cmd_codec(int argc, char **argv)
     else { Console_Write("usage: codec raw|ulaw|adpcm\r\n"); return; }
   }
   Console_Printf("codec = %s\r\n", Codec_Name((codec_id_t)g_codec));
+}
+
+/* decim [fir|avg] — метод децимации 16→8 (действует только при rate 8000):
+ * fir = антиалиас FIR-НЧ ~3.6 кГц (по умолчанию, правильный),
+ * avg = усреднение пар (старый, слабый антиалиас — для сравнения на слух). */
+static void cmd_decim(int argc, char **argv)
+{
+  if (argc > 1)
+  {
+    if      (strcmp(argv[1], "fir") == 0) { g_decim = DECIM_FIR; }
+    else if (strcmp(argv[1], "avg") == 0) { g_decim = DECIM_AVG; }
+    else { Console_Write("usage: decim fir|avg\r\n"); return; }
+  }
+  Console_Printf("decim = %s%s\r\n", (g_decim == DECIM_FIR) ? "fir (anti-alias)" : "avg (old)",
+                 (g_rate == RATE_16K) ? " [active only at rate 8000]" : "");
 }
 
 /* rate [8000|16000] */
@@ -489,6 +552,7 @@ static const console_cmd_t k_cmds[] =
   { "tone",     "tone on [freq]|off (default 1 kHz)",       cmd_tone     },
   { "codec",    "codec raw|ulaw|adpcm",                     cmd_codec    },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
+  { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
   { "load",     "codec core load (us/block, %)",            cmd_load     },
 };
