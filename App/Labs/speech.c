@@ -416,39 +416,60 @@ static void cmd_load(int argc, char **argv)
 }
 
 /* budget — граница канала для HC-12 (FU3): битрейт кодека, сжатие, мин. проводная скорость
- * HC-12, соответствующая эфирная и чувствительность приёмника. Данные HC-12 — из документации
- * модуля (режим FU3). Оценка проводного потока = битрейт × ~1.3 (UART 8N1 10/8 + кадрирование). */
+ * HC-12, соответствующая эфирная и чувствительность приёмника. Данные HC-12 (FU3) — из
+ * документации модуля: сетка ПРОВОДНЫХ скоростей; пары проводных дают одну эфирную:
+ *   1200/2400 -> 5000 (-117), 4800/9600 -> 15000 (-112),
+ *   19200/38400 -> 58000 (-107), 57600/115200 -> 236000 (-100).
+ * Проводной поток = битрейт × 1.30: UART 8N1 даёт 10 бит на байт вместо 8 (×1.25), плюс
+ * кадрирование SLIP (маркеры END + CRC + заголовок + стаффинг) ~+5% в среднем. Требуемый
+ * поток сравнивается С СЕТКОЙ ПРОВОДНЫХ скоростей — берётся минимальная не меньше потока;
+ * если поток > 115200 (максимум HC-12) — не влезает. */
 static void cmd_budget(int argc, char **argv)
 {
-  static const uint32_t air[4]   = { 5000u, 15000u, 58000u, 236000u };
-  static const int      sens[4]  = { -117, -112, -107, -100 };
-  static const uint32_t wired[4] = { 2400u, 9600u, 38400u, 115200u };
+  static const uint32_t wired[8] = { 1200u, 2400u, 4800u, 9600u, 19200u, 38400u, 57600u, 115200u };
+  static const uint32_t airR[8]  = { 5000u, 5000u, 15000u, 15000u, 58000u, 58000u, 236000u, 236000u };
+  static const int      sensR[8] = { -117, -117, -112, -112, -107, -107, -100, -100 };
   uint32_t fs = (g_rate == RATE_8K) ? 8000u : 16000u;
-  int c;
+  int c, t;
   (void)argc; (void)argv;
 
-  Console_Printf("budget @ %lu Hz (HC-12 FU3, wire ~= bitrate x1.3):\r\n", (unsigned long)fs);
-  Console_Write("codec   bitrate  ratio  HC12wire   air      sens\r\n");
+  Console_Printf("budget @ %lu Hz (HC-12 FU3; wire = bitrate x1.30 = UART 8N1 x1.25 + SLIP ~5%%):\r\n",
+                 (unsigned long)fs);
+  Console_Write("codec    bitrate  ratio  wire     HC12wire  air      sens\r\n");
   for (c = 0; c < (int)CODEC_COUNT; c++)
   {
     uint32_t bps   = (fs * Codec_BitsX10((codec_id_t)c)) / 10u;
     uint32_t wire  = (bps * 13u) / 10u;
     uint32_t ratio = 160u / Codec_BitsX10((codec_id_t)c);
-    int t, found = 0;
-    for (t = 0; t < 4; t++)
+    int found = 0;
+    for (t = 0; t < 8; t++)
     {
-      if (air[t] >= wire)
+      if (wired[t] >= wire)
       {
-        Console_Printf("%-6s %7lu   x%lu   <=%-6lu  %-6lu  %d dBm\r\n",
+        Console_Printf("%-6s  %7lu   x%lu   %-7lu  %-7lu   %-6lu   %d dBm\r\n",
                        Codec_Name((codec_id_t)c), (unsigned long)bps, (unsigned long)ratio,
-                       (unsigned long)wired[t], (unsigned long)air[t], sens[t]);
+                       (unsigned long)wire, (unsigned long)wired[t], (unsigned long)airR[t], sensR[t]);
         found = 1; break;
       }
     }
     if (found == 0)
     {
-      Console_Printf("%-6s %7lu   x%lu   does not fit HC-12 (> 236000)\r\n",
-                     Codec_Name((codec_id_t)c), (unsigned long)bps, (unsigned long)ratio);
+      Console_Printf("%-6s  %7lu   x%lu   %-7lu  does not fit HC-12 (> 115200)\r\n",
+                     Codec_Name((codec_id_t)c), (unsigned long)bps, (unsigned long)ratio, (unsigned long)wire);
+    }
+  }
+  /* Ориентир: настоящий вокодер Codec2 @ 3200 бит/с (пока не реализован) — открывает
+   * дальнобойный режим, недоступный даже ADPCM. */
+  {
+    uint32_t wire = (3200u * 13u) / 10u;   /* = 4160 */
+    for (t = 0; t < 8; t++)
+    {
+      if (wired[t] >= wire)
+      {
+        Console_Printf("codec2*    3200   x40+   %-7lu  %-7lu   %-6lu   %d dBm  [plan]\r\n",
+                       (unsigned long)wire, (unsigned long)wired[t], (unsigned long)airR[t], sensR[t]);
+        break;
+      }
     }
   }
 }
