@@ -53,11 +53,12 @@
 #define RATE_16K        1u
 
 /* ================= НАСТРОЙКИ (по умолчанию) ================= */
-static volatile uint8_t g_codec = (uint8_t)CODEC_ADPCM;  /* кодек по умолчанию */
-static volatile uint8_t g_rate  = RATE_16K;              /* частота по умолчанию */
-static volatile uint8_t g_ptt   = 0u;
-static volatile uint8_t g_tone  = 0u;
-static uint8_t          g_pttCmd = 0u;
+static volatile uint8_t  g_codec = (uint8_t)CODEC_ADPCM; /* кодек по умолчанию */
+static volatile uint8_t  g_rate  = RATE_16K;             /* частота по умолчанию */
+static volatile uint8_t  g_ptt   = 0u;
+static volatile uint8_t  g_tone  = 0u;
+static volatile uint16_t g_toneHz = 1000u;              /* частота тона (Гц), по умолчанию 1 кГц */
+static uint8_t           g_pttCmd = 0u;
 
 /* ================= ПЕРЕДАЧА (аудио-ISR) ================= */
 static int16_t  acc16[SAMP16];
@@ -68,7 +69,7 @@ static uint8_t  txEnc[ENC_MAX];
 
 static const int16_t toneLUT[16] =
 { 0, 3062, 5657, 7391, 8000, 7391, 5657, 3062, 0, -3062, -5657, -7391, -8000, -7391, -5657, -3062 };
-static uint8_t  tonePhase = 0u;
+static uint32_t tonePhaseAcc = 0u;   /* фаза NCO (Q32); индекс = биты 31..28, дробь — 27..12 */
 
 /* ================= ПРИЁМ / ДЖИТТЕР-БУФЕР (16 кГц) ================= */
 static Frame_Decoder     rxDec;
@@ -113,20 +114,45 @@ static void jb_push_silence(uint16_t n)
 /* ================= ПЕРЕДАЧА: кодирование блока и отправка (аудио-ISR) ================= */
 static void tx_flush(void)
 {
-  const int16_t *src = acc16;
-  uint16_t nsamp = SAMP16;
-  int16_t  ds[SAMP8];
+  int16_t  work[SAMP16];               /* блок на РАБОЧЕЙ частоте (80 @16кГц или 40 @8кГц) */
+  uint16_t nsamp;
+  uint32_t workRate;
   uint16_t enc, frameLen, i;
   uint32_t t0;
 
-  if (g_rate == RATE_8K)                          /* децимация 16→8 (усреднение пар) */
+  if (g_rate == RATE_8K)               /* децимация 16→8 (усреднение пар) */
   {
-    for (i = 0u; i < SAMP8; i++) { ds[i] = (int16_t)(((int32_t)acc16[2u * i] + acc16[2u * i + 1u]) / 2); }
-    src = ds; nsamp = SAMP8;
+    for (i = 0u; i < SAMP8; i++) { work[i] = (int16_t)(((int32_t)acc16[2u * i] + acc16[2u * i + 1u]) / 2); }
+    nsamp = SAMP8; workRate = 8000u;
+  }
+  else
+  {
+    for (i = 0u; i < SAMP16; i++) { work[i] = acc16[i]; }
+    nsamp = SAMP16; workRate = 16000u;
+  }
+
+  if (g_tone != 0u)
+  {
+    /* Тон генерируется на РАБОЧЕЙ частоте фазовым аккумулятором: приращение фазы за отсчёт =
+     * g_toneHz/workRate, поэтому слышимая частота = g_toneHz Гц НЕЗАВИСИМО от rate (раньше
+     * таблица шла на 1 запись/отсчёт и на 8 кГц давала 500 Гц вместо 1000). Полоса ограничена
+     * workRate/2: на 8 кГц тон выше 4 кГц не проходит (алиасинг слышен — проверка полосы).
+     * Фаза непрерывна между блоками и при смене rate (inc пересчитывается каждый блок),
+     * поэтому тон не сбивается. Отсчёт = линейная интерполяция 16-точечной синус-таблицы. */
+    uint32_t inc = (uint32_t)(((uint64_t)g_toneHz << 32) / workRate);
+    for (i = 0u; i < nsamp; i++)
+    {
+      uint32_t idx  = tonePhaseAcc >> 28;
+      int32_t  frac = (int32_t)((tonePhaseAcc >> 12) & 0xFFFFu);
+      int16_t  a = toneLUT[idx];
+      int16_t  b = toneLUT[(idx + 1u) & 0x0Fu];
+      work[i] = (int16_t)(a + (int16_t)((((int32_t)(b - a)) * frac) >> 16));
+      tonePhaseAcc += inc;
+    }
   }
 
   t0 = DWT->CYCCNT;
-  enc = Codec_Encode((codec_id_t)g_codec, src, nsamp, txPayload + VOICE_HDR,
+  enc = Codec_Encode((codec_id_t)g_codec, work, nsamp, txPayload + VOICE_HDR,
                      (uint16_t)(sizeof(txPayload) - VOICE_HDR));
   encCyc += (uint32_t)(DWT->CYCCNT - t0); encCnt++;
 
@@ -153,10 +179,8 @@ void Audio_OnCapture(const int16_t *mono, uint16_t n)
   if (g_ptt == 0u) { return; }
   for (i = 0u; i < n; i++)
   {
-    int16_t s;
-    if (g_tone != 0u) { s = toneLUT[tonePhase]; tonePhase = (uint8_t)((tonePhase + 1u) & 0x0Fu); }
-    else              { s = mono[i]; }
-    acc16[accN++] = s;
+    /* Накапливаем звук с микрофона; подмена на тон — в tx_flush на рабочей частоте. */
+    acc16[accN++] = mono[i];
     if (accN >= SAMP16) { tx_flush(); }
   }
 }
@@ -327,12 +351,29 @@ static void cmd_ptt(int argc, char **argv)
   else { Console_Write("usage: ptt on|off\r\n"); return; }
   Console_Printf("ptt(cmd) = %s\r\n", g_pttCmd ? "on" : "off");
 }
+/* tone on [freq] | off — тон на РАБОЧЕЙ частоте; freq по умолчанию 1000 Гц. Частота
+ * задаётся, чтобы проверить полосу: на 8 кГц всё выше 4 кГц не проходит (алиасинг). */
 static void cmd_tone(int argc, char **argv)
 {
-  if (argc < 2) { Console_Printf("tone = %s\r\n", g_tone ? "on" : "off"); return; }
-  if (strcmp(argv[1], "on") == 0) { g_tone = 1u; } else if (strcmp(argv[1], "off") == 0) { g_tone = 0u; }
-  else { Console_Write("usage: tone on|off\r\n"); return; }
-  Console_Printf("tone = %s (1 kHz)\r\n", g_tone ? "on" : "off");
+  if (argc < 2)
+  {
+    Console_Printf("tone = %s (%u Hz)\r\n", g_tone ? "on" : "off", (unsigned)g_toneHz);
+    return;
+  }
+  if (strcmp(argv[1], "on") == 0)
+  {
+    if (argc > 2)
+    {
+      unsigned long f = strtoul(argv[2], NULL, 0);
+      if ((f < 50ul) || (f > 7900ul)) { Console_Write("freq out of range (50..7900)\r\n"); return; }
+      g_toneHz = (uint16_t)f;
+    }
+    else { g_toneHz = 1000u; }        /* по умолчанию 1 кГц */
+    g_tone = 1u;
+  }
+  else if (strcmp(argv[1], "off") == 0) { g_tone = 0u; }
+  else { Console_Write("usage: tone on [freq] | off\r\n"); return; }
+  Console_Printf("tone = %s (%u Hz)\r\n", g_tone ? "on" : "off", (unsigned)g_toneHz);
 }
 
 /* codec [raw|ulaw|adpcm] */
@@ -424,7 +465,7 @@ static const console_cmd_t k_cmds[] =
   { "voice",    "voice path stats + rx line errors",        cmd_voice    },
   { "proto",    "framing protocol statistics (rx)",         cmd_proto    },
   { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
-  { "tone",     "tone on|off (send 1 kHz instead of mic)",  cmd_tone     },
+  { "tone",     "tone on [freq]|off (default 1 kHz)",       cmd_tone     },
   { "codec",    "codec raw|ulaw|adpcm",                     cmd_codec    },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
