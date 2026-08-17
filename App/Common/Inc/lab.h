@@ -28,8 +28,8 @@ extern "C" {
 /* --- Защита от неверной конфигурации сборки (внятная ошибка вместо ошибок компоновки) --- */
 #if !defined(LAB_ID)
 # error "LAB_ID is not defined: the active build configuration does not match any lab. Select a lab build configuration (for example LAB00 -> LAB_ID=0)."
-#elif (LAB_ID != 0) && (LAB_ID != 2) && (LAB_ID != 3) && (LAB_ID != 4) && (LAB_ID != 5)
-# error "No lab code for the selected build configuration (LAB_ID is not in the implemented list). Implemented: LAB00 (LAB_ID=0), LAB02 (LAB_ID=2), LAB03 (LAB_ID=3), LAB04 (LAB_ID=4), LAB05 (LAB_ID=5). Check the active build configuration."
+#elif (LAB_ID != 0) && (LAB_ID != 2) && (LAB_ID != 3) && (LAB_ID != 4) && (LAB_ID != 5) && (LAB_ID != 7)
+# error "No lab code for the selected build configuration (LAB_ID is not in the implemented list). Implemented: LAB00 (0), LAB02 (2), LAB03 (3), LAB04 (4), LAB05 (5), LAB07 (7). Check the active build configuration."
 #endif
 
 /**

@@ -13,7 +13,7 @@
 
 #include "lab.h"
 
-#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5)
+#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5) || (LAB_ID == 7)
 
 #include "frame.h"
 
