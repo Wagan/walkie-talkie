@@ -49,6 +49,25 @@ void Audio_FillPlayback(int16_t *mono, uint16_t n);
 /* Ошибка аудиотракта (who — имя колбэка BSP). Контекст прерывания. */
 void Audio_OnError(const char *who);
 
+/* --- Диагностика A: задержка пере-взвода воспроизведения (см. docs/REPORT_isr_deadline_probe.md).
+ * Воспроизведение — DMA NORMAL, пере-взвод в ISR каждую 1 мс. Замеряем интервал между
+ * соседними колбэками (DWT), считаем превышения дедлайна с временно́й привязкой, чтобы
+ * сопоставить всплески со слышимыми провалами. Счётчики накапливаются; сброс — Audio_ResetOutProbe. */
+typedef struct
+{
+  uint32_t calls;         /* всего измеренных интервалов между колбэками */
+  uint32_t over;          /* интервалов длиннее дедлайна (порог threshUs) */
+  uint32_t threshUs;      /* фактический порог, мкс (номинал 1 мс + 1 слово I2S) */
+  uint32_t maxUs;         /* максимальный интервал за прогон, мкс */
+  uint32_t firstSec;      /* секунда (от reset/старта) первого превышения; 0 если не было */
+  uint32_t lastSec;       /* секунда последнего превышения */
+  uint32_t lastMinOver;   /* превышений за последние ~60 с (кольцо меток) */
+  uint8_t  lastMinCapped; /* 1 — окно насыщено (≥ размера кольца), число занижено */
+} Audio_OutProbe;
+
+void Audio_GetOutProbe(Audio_OutProbe *out);   /* снимок счётчиков A (для печати вне ISR) */
+void Audio_ResetOutProbe(void);                /* обнулить A и задать базу «секунд от старта» */
+
 #ifdef __cplusplus
 }
 #endif

@@ -85,6 +85,13 @@ void     UartPort_ResetStats(void);
  * Возвращает число скопированных байт (<= max и <= фактически накопленного). */
 uint16_t UartPort_Dump(uint8_t *dst, uint16_t max);
 
+/* --- Диагностика B: длительность приёмного ISR (HAL_UARTEx_RxEventCallback), где идёт весь
+ * разбор кадра. Замер DWT от входа до выхода; нужно знать запас относительно 1-мс дедлайна
+ * пере-взвода аудио-выхода. См. docs/REPORT_isr_deadline_probe.md. Счётчики накапливаются. */
+#define UARTPORT_RXISR_LONG_US   250u   /* порог «длинного» ISR (мкс), ~1/4 от 1-мс дедлайна */
+void UartPort_GetRxIsrProbe(uint32_t *calls, uint32_t *maxUs, uint32_t *avgUs, uint32_t *longCnt);
+void UartPort_ResetRxIsrProbe(void);
+
 /* --- Слабые хуки для лаборатории (по умолчанию пустые; переопределять при необходимости) --- */
 void UartPort_OnRxOk(void);    /* вызывается из ISR при корректно принятом пакете */
 void UartPort_OnError(void);   /* вызывается из ISR при ошибке приёмника/несходе CRC */

@@ -118,6 +118,16 @@ static volatile uint8_t  haveRemote  = 0u;
 static volatile uint32_t expRemoteSeq = 0u;
 static volatile uint8_t  haveRemoteSeq = 0u;
 
+/* ===== Диагностика B: длительность приёмного ISR (см. docs/REPORT_isr_deadline_probe.md) =====
+ * Замер DWT от входа до выхода HAL_UARTEx_RxEventCallback (где идёт весь разбор кадра).
+ * Порог в тактах считается один раз в UartPort_Init от SystemCoreClock — в ISR деления нет.
+ * Переполнение 32-битного CYCCNT для длительностей ≪ 44.7 с безопасно (беззнаковая разность). */
+static uint32_t          rxIsrThreshCyc = 0u;   /* порог «длинного» ISR, тактов */
+static volatile uint32_t rxIsrCalls  = 0u;
+static volatile uint32_t rxIsrMaxCyc = 0u;
+static volatile uint64_t rxIsrSumCyc = 0u;      /* 64-бит: не переполнится за прогон */
+static volatile uint32_t rxIsrLong   = 0u;      /* вызовов длиннее порога */
+
 /* ================= СЛАБЫЕ ХУКИ (по умолчанию пустые) ================= */
 __attribute__((weak)) void UartPort_OnRxOk(void)   { }
 __attribute__((weak)) void UartPort_OnError(void)  { }
@@ -391,6 +401,8 @@ void UartPort_Init(void)
 {
   Frame_DecoderInit(&g_dec);
   g_txByteCtr = 0u;
+  /* Порог диагностики B в тактах (деление один раз, не в ISR). */
+  rxIsrThreshCyc = (SystemCoreClock / 1000000u) * UARTPORT_RXISR_LONG_US;
   start_rx();
 }
 
@@ -438,6 +450,23 @@ void UartPort_ResetStats(void)
   g_dec.stats.resync = 0u; g_dec.stats.bytesDropped = 0u;
 }
 
+/* ===== Диагностика B: снимок и сброс (вне ISR; деления только здесь) ===== */
+void UartPort_GetRxIsrProbe(uint32_t *calls, uint32_t *maxUs, uint32_t *avgUs, uint32_t *longCnt)
+{
+  uint32_t cycPerUs = SystemCoreClock / 1000000u;
+  uint32_t c = rxIsrCalls;
+  uint64_t sum = rxIsrSumCyc;
+  if (calls   != NULL) { *calls   = c; }
+  if (maxUs   != NULL) { *maxUs   = (cycPerUs != 0u) ? (rxIsrMaxCyc / cycPerUs) : 0u; }
+  if (avgUs   != NULL) { *avgUs   = ((c != 0u) && (cycPerUs != 0u)) ? (uint32_t)((sum / c) / cycPerUs) : 0u; }
+  if (longCnt != NULL) { *longCnt = rxIsrLong; }
+}
+
+void UartPort_ResetRxIsrProbe(void)
+{
+  rxIsrCalls = 0u; rxIsrMaxCyc = 0u; rxIsrSumCyc = 0u; rxIsrLong = 0u;
+}
+
 uint16_t UartPort_Dump(uint8_t *dst, uint16_t max)
 {
   uint32_t have;
@@ -472,6 +501,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   uint16_t i;
+  uint32_t _t0 = DWT->CYCCNT;        /* диагностика B: старт замера длительности ISR */
 
   if (huart->Instance != USART2) { return; }
 
@@ -511,6 +541,15 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
       wasSynced = 0u;
     }
     asmLen = 0u;
+  }
+
+  /* Диагностика B: длительность этого ISR (вход→выход). Только арифметика, без деления. */
+  {
+    uint32_t d = (uint32_t)(DWT->CYCCNT - _t0);
+    rxIsrCalls++;
+    rxIsrSumCyc += (uint64_t)d;
+    if (d > rxIsrMaxCyc) { rxIsrMaxCyc = d; }
+    if ((rxIsrThreshCyc != 0u) && (d > rxIsrThreshCyc)) { rxIsrLong++; }
   }
 }
 

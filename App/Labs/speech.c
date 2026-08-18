@@ -369,6 +369,8 @@ static void cmd_reset(int argc, char **argv)
   cRec = cSent = cTxDrop = cRecv = cLost = cPlayed = cUnder = cOver = 0u;
   encCyc = encCnt = decCyc = decCnt = 0u;
   rxDec.stats.framesRx = rxDec.stats.framesCrc = rxDec.stats.resync = rxDec.stats.bytesDropped = 0u;
+  Audio_ResetOutProbe();        /* диагностика A: обнулить и задать базу «секунд от старта» */
+  UartPort_ResetRxIsrProbe();   /* диагностика B */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -383,6 +385,20 @@ static void cmd_voice(int argc, char **argv)
                  (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
                  (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
                  (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
+  /* Диагностика срыва дедлайна аудио-выхода (TASK_isr_deadline_probe) — отдельными строками. */
+  {
+    Audio_OutProbe ap;
+    uint32_t bcalls = 0u, bmax = 0u, bavg = 0u, blong = 0u;
+    Audio_GetOutProbe(&ap);
+    UartPort_GetRxIsrProbe(&bcalls, &bmax, &bavg, &blong);
+    Console_Printf("probeA out-rearm: calls=%lu over(>%luus)=%lu max=%luus first=%lus last=%lus lastmin=%lu%s\r\n",
+                   (unsigned long)ap.calls, (unsigned long)ap.threshUs, (unsigned long)ap.over,
+                   (unsigned long)ap.maxUs, (unsigned long)ap.firstSec, (unsigned long)ap.lastSec,
+                   (unsigned long)ap.lastMinOver, (ap.lastMinCapped != 0u) ? "(capped)" : "");
+    Console_Printf("probeB rx-isr: calls=%lu max=%luus avg=%luus long(>%uus)=%lu\r\n",
+                   (unsigned long)bcalls, (unsigned long)bmax, (unsigned long)bavg,
+                   (unsigned)UARTPORT_RXISR_LONG_US, (unsigned long)blong);
+  }
 }
 static void cmd_proto(int argc, char **argv)
 {
