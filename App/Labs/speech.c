@@ -372,6 +372,8 @@ static void rx_drain(void)
 /* sink в ISR — только постановка кадра в очередь (разбор перенесён в rx_drain/Lab_Process). */
 static void voice_rx_byte(uint8_t b) { Frame_DecodeByte(&rxDec, b, frame_enqueue); }
 
+static void configure_preemption(void);   /* определение ниже; нужен cmd_baud (реассерт приоритетов) */
+
 /* ================= КОМАНДЫ (база как в LAB04) ================= */
 static void cmd_send(int argc, char **argv)
 {
@@ -421,7 +423,9 @@ static void cmd_baud(int argc, char **argv)
   if (argc < 2) { Console_Printf("baud = %lu\r\n", (unsigned long)UartPort_GetBaud()); return; }
   b = strtoul(argv[1], NULL, 0);
   if ((b < 1200ul) || (b > 3000000ul)) { Console_Write("baud out of range\r\n"); return; }
-  UartPort_SetBaud((uint32_t)b); Console_Printf("baud set to %lu\r\n", (unsigned long)UartPort_GetBaud());
+  UartPort_SetBaud((uint32_t)b);
+  configure_preemption();   /* HAL_UART_MspInit при реините вернул USART2 в (0,0) — переустановить */
+  Console_Printf("baud set to %lu\r\n", (unsigned long)UartPort_GetBaud());
 }
 static void cmd_reset(int argc, char **argv)
 {
@@ -639,6 +643,37 @@ static const console_cmd_t k_cmds[] =
   { "load",     "codec core load (us/block, %)",            cmd_load     },
 };
 
+/* Разрешить вытеснение и поднять аудио-выход выше приёмного USART2 (TASK_nvic_preemption).
+ * По умолчанию проект стоит на NVIC_PRIORITYGROUP_0 (вытеснения нет вовсе, stm32f4xx_hal_msp.c:75),
+ * поэтому колбэк пере-взвода аудио-выхода не может прервать длинный приёмный ISR → срыв 1-мс
+ * дедлайна. Здесь включаем GROUP_4 и расставляем уровни (0 = высший):
+ *   аудио-выход DMA1_Stream7 = 0  — ДОЛЖЕН прерывать приёмный ISR (это и есть лечение);
+ *   SysTick               = 1  — ниже выхода (не задерживает пере-взвод), выше остальных
+ *                                (HAL_GetTick идёт во время USART/USB/аудио-входа);
+ *   аудио-вход DMA1_Stream3 = 2 и USART2 + DMA1_Stream5 (RX) = 2 — ОДИН уровень: приёмный
+ *                                колбэк не реентерабелен, а аудио-вход на ПЕРЕДАТЧИКЕ зовёт
+ *                                HAL_UART_Transmit_IT — при равном уровне нет реентерабельного
+ *                                доступа к huart2;
+ *   USB OTG_FS            = 3  — ниже всех (не задерживает аудио).
+ * Пути аудио-ISR проверены: без HAL_Delay/HAL_GetTick-ожиданий (I2S DMA-старт неблокирующий,
+ * SendRaw = HAL_UART_Transmit_IT), поэтому уровни выше SysTick безопасны.
+ * ОТКАТ: убрать оба вызова configure_preemption() (в Lab_Init и cmd_baud) — вернётся GROUP_0
+ * и приоритеты из генерируемых MspInit, т.е. прежнее поведение. Разбор кадра в Lab_Process
+ * (60dfbe6) при этом не откатывается. */
+static void configure_preemption(void)
+{
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  HAL_NVIC_SetPriorityGrouping(NVIC_PRIORITYGROUP_4);
+  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 0u, 0u);   /* аудио-выход I2S3 — высший */
+  HAL_NVIC_SetPriority(SysTick_IRQn,      1u, 0u);
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 2u, 0u);   /* аудио-вход I2S2 */
+  HAL_NVIC_SetPriority(USART2_IRQn,       2u, 0u);
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 2u, 0u);   /* приём USART2 RX DMA — как USART2 */
+  HAL_NVIC_SetPriority(OTG_FS_IRQn,       3u, 0u);   /* USB — низший */
+  if (primask == 0u) { __enable_irq(); }
+}
+
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
 uint8_t Lab_Init(void)
 {
@@ -664,6 +699,9 @@ uint8_t Lab_Init(void)
     Console_Write("\r\nLAB07: AUDIO INIT FAILED\r\n");
     return 1u;
   }
+
+  /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение. */
+  configure_preemption();
 
   TRACE_LOG("LAB07 speech: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1",
             Codec_Name((codec_id_t)g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
