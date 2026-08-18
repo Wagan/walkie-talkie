@@ -20,7 +20,10 @@
   * Воспроизведение всегда 16 кГц (аппаратный тракт неизменен): принятый 8-кГц звук
   * интерполируется обратно в 16 кГц.
   *
-  * Печать из ISR запрещена: аудио-хуки и разбор кадров — только счётчики/буферы.
+  * Печать из ISR запрещена. Приёмный ISR лишь ставит готовый кадр в очередь (frame_enqueue);
+  * тяжёлый разбор (Codec_Decode, апсемплинг, jb_push = voice_sink) вынесен в Lab_Process
+  * (rx_drain), чтобы приёмный ISR не задерживал 1-мс пере-взвод аудио-выхода — см.
+  * docs/REPORT_rx_isr_offload.md и docs/REPORT_isr_deadline_probe.md.
   ******************************************************************************
   */
 
@@ -111,6 +114,32 @@ static volatile uint32_t decCyc = 0u, decCnt = 0u;
 /* ================= СЧЁТЧИКИ ================= */
 static volatile uint32_t cRec = 0u, cSent = 0u, cTxDrop = 0u, cRecv = 0u, cLost = 0u;
 static volatile uint32_t cPlayed = 0u, cUnder = 0u, cOver = 0u;
+static volatile uint32_t cQover = 0u;                 /* offload: кадр принят, но очередь полна */
+static volatile uint32_t loopMaxCyc = 0u;             /* макс. интервал между вызовами Lab_Process (тактов) */
+static uint32_t          loopPrevCyc = 0u;
+static uint8_t           loopHavePrev = 0u;
+
+/* ================= ОЧЕРЕДЬ КАДРОВ: вынос разбора из ISR (TASK_rx_isr_offload) =================
+ * Приёмный ISR (uart_port RxEventCallback → voice_rx_byte → Frame_DecodeByte) при готовом
+ * КАДРЕ лишь КОПИРУЕТ его в очередь (frame_enqueue) и двигает head. Тяжёлый разбор
+ * (заголовок, Codec_Decode, апсемплинг, jb_push = voice_sink) выполняется в Lab_Process
+ * (rx_drain). Так приёмный ISR перестаёт задерживать 1-мс пере-взвод аудио-выхода.
+ *
+ * Один производитель (ISR пишет ТОЛЬКО fqHead и слоты) и один потребитель (Lab_Process
+ * пишет ТОЛЬКО fqTail) → индексы атомарны по построению, критических секций в ISR нет.
+ *
+ * Глубина: кадр приходит каждые 5 мс; период Lab_Process — доли мс (консоль неблокирующая:
+ * raw_put отбрасывает при полном кольце, tx_drain — один CDC_Transmit_FS без ожидания),
+ * т.е. между разгрузками накапливается <1 кадра. FQ_DEPTH=16 = 80 мс буфера — >16× запас
+ * даже против маловероятной 5-мс задержки цикла; фактический период показывает loop_max в
+ * команде voice. Переполнение считается cQover (молчаливой потери нет). Слот = FRAME_MAX_CONTENT,
+ * чтобы никогда не усекать CRC-корректный кадр. */
+#define FQ_DEPTH   16u
+#define FQ_MASK    (FQ_DEPTH - 1u)
+typedef struct { uint16_t len; uint8_t data[FRAME_MAX_CONTENT]; } fq_item_t;
+static fq_item_t         fq[FQ_DEPTH];
+static volatile uint16_t fqHead = 0u;   /* пишет только ISR-производитель */
+static volatile uint16_t fqTail = 0u;   /* пишет только потребитель (Lab_Process) */
 
 static uint16_t jb_fill(void) { return (uint16_t)((jbHead - jbTail) & JB_MASK); }
 
@@ -261,7 +290,21 @@ void Audio_FillPlayback(int16_t *mono, uint16_t n)
 
 void Audio_OnError(const char *who) { (void)who; BSP_LED_On(LED5); }
 
-/* ================= ПРИЁМ КАДРОВ (ISR через RxTap) ================= */
+/* Постановка готового кадра в очередь — вызывается в ISR как sink Frame_DecodeByte.
+ * Только копирование байтов и публикация head (никакого декодирования). */
+static void frame_enqueue(const uint8_t *payload, uint16_t len)
+{
+  uint16_t nh = (uint16_t)((fqHead + 1u) & FQ_MASK);
+  uint16_t i;
+  if (nh == fqTail) { cQover++; return; }               /* очередь полна: кадр принят, класть некуда */
+  if (len > (uint16_t)FRAME_MAX_CONTENT) { len = (uint16_t)FRAME_MAX_CONTENT; }
+  fq[fqHead].len = len;
+  for (i = 0u; i < len; i++) { fq[fqHead].data[i] = payload[i]; }
+  __DMB();                                               /* содержимое слота видно до публикации head */
+  fqHead = nh;
+}
+
+/* ================= ПРИЁМ КАДРОВ (разбор — в Lab_Process через rx_drain) ================= */
 static void voice_sink(const uint8_t *payload, uint16_t len)
 {
   int16_t  dec[SAMP16];       /* декодировано (в частоте кадра) */
@@ -309,7 +352,25 @@ static void voice_sink(const uint8_t *payload, uint16_t len)
   jb_push(up, outn);
 }
 
-static void voice_rx_byte(uint8_t b) { Frame_DecodeByte(&rxDec, b, voice_sink); }
+/* Разгрузка очереди кадров в основном цикле: тяжёлый voice_sink здесь, не в ISR. */
+static void rx_drain(void)
+{
+  if (g_ptt != 0u)                        /* передаём — приём не нужен: опустошаем очередь */
+  {
+    fqTail = fqHead;                      /* без залипших кадров от прошлого сеанса */
+    return;
+  }
+  while (fqTail != fqHead)
+  {
+    uint16_t t = fqTail;
+    voice_sink(fq[t].data, fq[t].len);
+    __DMB();                              /* дочитать слот до освобождения (до сдвига tail) */
+    fqTail = (uint16_t)((t + 1u) & FQ_MASK);
+  }
+}
+
+/* sink в ISR — только постановка кадра в очередь (разбор перенесён в rx_drain/Lab_Process). */
+static void voice_rx_byte(uint8_t b) { Frame_DecodeByte(&rxDec, b, frame_enqueue); }
 
 /* ================= КОМАНДЫ (база как в LAB04) ================= */
 static void cmd_send(int argc, char **argv)
@@ -371,6 +432,8 @@ static void cmd_reset(int argc, char **argv)
   rxDec.stats.framesRx = rxDec.stats.framesCrc = rxDec.stats.resync = rxDec.stats.bytesDropped = 0u;
   Audio_ResetOutProbe();        /* диагностика A: обнулить и задать базу «секунд от старта» */
   UartPort_ResetRxIsrProbe();   /* диагностика B */
+  fqHead = fqTail = 0u; cQover = 0u;           /* очередь кадров offload */
+  loopMaxCyc = 0u; loopHavePrev = 0u;          /* probeC: период Lab_Process */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -398,6 +461,9 @@ static void cmd_voice(int argc, char **argv)
     Console_Printf("probeB rx-isr: calls=%lu max=%luus avg=%luus long(>%uus)=%lu\r\n",
                    (unsigned long)bcalls, (unsigned long)bmax, (unsigned long)bavg,
                    (unsigned)UARTPORT_RXISR_LONG_US, (unsigned long)blong);
+    Console_Printf("probeC offload: qover=%lu qdepth=%u loop_max=%luus\r\n",
+                   (unsigned long)cQover, (unsigned)FQ_DEPTH,
+                   (unsigned long)(loopMaxCyc / (SystemCoreClock / 1000000u)));
   }
 }
 static void cmd_proto(int argc, char **argv)
@@ -615,12 +681,23 @@ void Lab_Process(void)
   uint32_t now = HAL_GetTick();
   uint8_t  raw;
 
+  /* Замер фактического периода вызова Lab_Process (макс. интервал = худшая добавленная
+   * задержка разбора кадра). Только чтение CYCCNT + разность; печатается как loop_max. */
+  {
+    uint32_t cyc = DWT->CYCCNT;
+    if (loopHavePrev != 0u) { uint32_t d = (uint32_t)(cyc - loopPrevCyc); if (d > loopMaxCyc) { loopMaxCyc = d; } }
+    else { loopHavePrev = 1u; }
+    loopPrevCyc = cyc;
+  }
+
   Console_Process();
 
   raw = (BSP_PB_GetState(BUTTON_KEY) != 0u) ? 1u : 0u;
   if (raw != pttRawLast) { pttRawLast = raw; pttChangeTick = now; }
   else if (((uint32_t)(now - pttChangeTick) >= 20u) && (pttBtn != raw)) { pttBtn = raw; }
   g_ptt = (uint8_t)((pttBtn != 0u) || (g_pttCmd != 0u));
+
+  rx_drain();   /* offload: разбор принятых кадров здесь, а не в приёмном ISR */
 
   if (g_ptt != 0u) { BSP_LED_On(LED3); } else { BSP_LED_Off(LED3); }
   if (Console_IsConfigured() != 0u)
