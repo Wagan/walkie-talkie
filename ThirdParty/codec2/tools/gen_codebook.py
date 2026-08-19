@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # Faithful python port of codec2 src/generate_codebook.c (LGPL 2.1).
 # Emits identical C to the original host tool so codebooks match the library ABI.
-import sys, math
+import sys, math, struct
+
+def to_f32(x):
+    # Эталонный generate_codebook.c хранит значения как `float` (b->cb[i]),
+    # т.е. strtod(double) округляется до float32 при присваивании. Повторяем это,
+    # иначе %g печатает 6 значащих цифр double, а не float32 (расходится в младшей).
+    return struct.unpack('<f', struct.pack('<f', x))[0]
 
 def parse_floats(path):
     vals = []
@@ -19,8 +25,8 @@ def parse_floats(path):
     return vals
 
 def fmt_g(x):
-    # match C printf %g
-    return '%g' % x
+    # C printf %g от значения, хранимого как float32
+    return '%g' % to_f32(x)
 
 def main():
     array_name = sys.argv[1]

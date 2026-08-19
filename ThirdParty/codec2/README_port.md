@@ -20,9 +20,12 @@ mbest.c, codec2_fft.c, kiss_fft.c, kiss_fftr.c, newamp1.c, dump.c` + загол�
 
 Кодовые книги (`codebook.c, codebookd.c, codebookjmv.c, codebookge.c, codebooknewamp1.c,
 codebooknewamp1_energy.c`) в исходниках Codec2 **генерируются** утилитой `generate_codebook` из
-данных `src/codebook/*.txt`. В нашем окружении нативного host-компилятора нет, поэтому генератор
-воспроизведён построчно на Python — `tools/gen_codebook.py` (точная копия логики
-`src/generate_codebook.c`, LGPL). Режимы 450/newamp2 не переносились (в дереве отсутствуют).
+данных `src/codebook/*.txt`. Генератор воспроизведён на Python — `tools/gen_codebook.py` (логика
+`src/generate_codebook.c`, LGPL; значения округляются через **float32**, как хранение `float` в
+эталоне). Режимы 450/newamp2 не переносились (в дереве отсутствуют).
+**Побитно сверено** (см. `docs/REPORT_codec2_codebook_verify.md`): все 6 книг байт-в-байт совпадают
+с выводом штатного `generate_codebook.c`, собранного хостовым gcc из commit `310777b`.
+`version.h` — штатный вывод `cmake configure_file` (1.2.0).
 
 ## Как собрана `Lib/libcodec2_cm4.a`
 
