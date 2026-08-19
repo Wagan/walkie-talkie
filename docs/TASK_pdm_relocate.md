@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_pdm_relocate
+ЗАДАНИЕ (Wagan's Team): TASK_pdm_relocate
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

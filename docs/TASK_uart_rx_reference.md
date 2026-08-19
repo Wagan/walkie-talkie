@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_uart_rx_reference
+ЗАДАНИЕ (Wagan's Team): TASK_uart_rx_reference
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

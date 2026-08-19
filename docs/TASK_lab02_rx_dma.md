@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab02_rx_dma
+ЗАДАНИЕ (Wagan's Team): TASK_lab02_rx_dma
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

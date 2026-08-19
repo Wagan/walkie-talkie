@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab07_speech_compression
+ЗАДАНИЕ (Wagan's Team): TASK_lab07_speech_compression
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

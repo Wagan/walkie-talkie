@@ -1,7 +1,7 @@
 # ОТЧЁТ ПО РАЗВЕДКЕ: REPORT_recon_env_and_repo
 
 Проект: walkie-talkie
-Исполнитель: Claude Code (файлы и git). Владелец: Vagan Sarukhanov.
+Исполнитель: Wagan's Team (файлы и git). Владелец: Vagan Sarukhanov.
 Дата: 2026-08-10
 Машина: рабочий ноутбук, Windows 11, PowerShell 5.1. Единственный диск — `C:`.
 

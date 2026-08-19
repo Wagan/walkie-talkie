@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab03_framing
+ЗАДАНИЕ (Wagan's Team): TASK_lab03_framing
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

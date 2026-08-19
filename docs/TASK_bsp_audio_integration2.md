@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_bsp_audio_integration2
+ЗАДАНИЕ (Wagan's Team): TASK_bsp_audio_integration2
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

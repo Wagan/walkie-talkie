@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_swo_trace2
+ЗАДАНИЕ (Wagan's Team): TASK_swo_trace2
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab02_uart_link
+ЗАДАНИЕ (Wagan's Team): TASK_lab02_uart_link
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

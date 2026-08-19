@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab04_voice_wire
+ЗАДАНИЕ (Wagan's Team): TASK_lab04_voice_wire
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab_layout
+ЗАДАНИЕ (Wagan's Team): TASK_lab_layout
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_lab05_usb_console
+ЗАДАНИЕ (Wagan's Team): TASK_lab05_usb_console
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

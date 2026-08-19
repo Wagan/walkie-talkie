@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_audio_loopback_demo
+ЗАДАНИЕ (Wagan's Team): TASK_audio_loopback_demo
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

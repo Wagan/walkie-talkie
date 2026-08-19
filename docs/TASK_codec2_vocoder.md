@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_codec2_vocoder
+ЗАДАНИЕ (Wagan's Team): TASK_codec2_vocoder
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ

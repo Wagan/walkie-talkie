@@ -1,4 +1,4 @@
-ЗАДАНИЕ ДЛЯ CLAUDE CODE: TASK_recon_env_and_repo
+ЗАДАНИЕ (Wagan's Team): TASK_recon_env_and_repo
 Автор: Vagan Sarukhanov
 
 КОНТЕКСТ
@@ -113,7 +113,7 @@ Release/
 # Справочная документация — в репозиторий не идёт
 docs/reference/
 
-# Claude Code
+# local tooling
 .claude/settings.local.json
 
 B3. Файл этого задания docs/TASK_recon_env_and_repo.md уже положен владельцем в

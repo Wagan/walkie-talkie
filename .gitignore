@@ -31,7 +31,7 @@ docs/reference/
 # (stlink.log_file → C:\Users\user\...), поэтому в репозиторий не идёт
 walkie-talkie.launch
 
-# Claude Code
+# local tooling
 .claude/settings.local.json
 .cproject.bak.before-lab03
 .cproject.bak.before-lab04
