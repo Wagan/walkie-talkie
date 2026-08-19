@@ -37,6 +37,7 @@
 #include "audio.h"
 #include "codec.h"
 #include "preempt.h"
+#include "codec2.h"          /* вокодер Codec2 (ThirdParty) — только для команды c2load (замер) */
 #include "trace_log.h"
 #include "stm32f4xx_hal.h"
 #include "stm32f411e_discovery.h"
@@ -622,6 +623,128 @@ static void cmd_budget(int argc, char **argv)
   }
 }
 
+/* ================= ЗАМЕР ЗАГРУЗКИ CODEC2 (TASK_codec2_port_and_load) =================
+ * Голый замер БЕЗ интеграции в тракт: тракт речи (raw/ulaw/adpcm, кадрирование, джиттер)
+ * не меняется, Codec2 к нему не подключается. Codec2 собран под __EMBEDDED__ и зовёт внешние
+ * codec2_malloc/free — даём аллокатор на СТАТИЧЕСКОМ пуле (без кучи; high-water пула = ОЗУ
+ * состояния). bump со сбросом при возврате счётчика аллокаций к нулю (create/destroy
+ * сбалансированы); high-water консервативен (включает не переиспользуемые временные буферы
+ * времени create). */
+#define C2_POOL_BYTES 40960u
+static uint8_t  c2Pool[C2_POOL_BYTES] __attribute__((aligned(8)));
+static uint32_t c2PoolTop = 0u, c2PoolCnt = 0u, c2PoolHigh = 0u;
+
+void *codec2_malloc(size_t size)
+{
+  uint32_t sz = (uint32_t)((size + 7u) & ~7u);
+  void *p;
+  if ((c2PoolTop + sz) > C2_POOL_BYTES) { return NULL; }
+  p = &c2Pool[c2PoolTop]; c2PoolTop += sz; c2PoolCnt++;
+  if (c2PoolTop > c2PoolHigh) { c2PoolHigh = c2PoolTop; }
+  return p;
+}
+void *codec2_calloc(size_t nmemb, size_t size)
+{
+  size_t total = nmemb * size;
+  void *p = codec2_malloc(total);
+  if (p != NULL) { memset(p, 0, total); }
+  return p;
+}
+void codec2_free(void *ptr)
+{
+  (void)ptr;
+  if (c2PoolCnt != 0u) { c2PoolCnt--; }
+  if (c2PoolCnt == 0u) { c2PoolTop = 0u; }   /* всё освобождено (destroy) → сброс пула */
+}
+
+/* Оценка расхода стека заливкой известным значением ниже текущего SP (высокая вода). */
+#define C2_STACK_PAINT   0xA5A5A5A5u
+#define C2_STACK_WINDOW  40960u
+static void c2_stack_paint(void)
+{
+  volatile uint32_t marker;
+  uint32_t *sp  = (uint32_t *)(((uint32_t)&marker - 64u) & ~3u);
+  uint32_t *bot = (uint32_t *)((uint32_t)sp - C2_STACK_WINDOW);
+  uint32_t *p;
+  for (p = bot; p < sp; p++) { *p = C2_STACK_PAINT; }
+}
+static uint32_t c2_stack_used(void)
+{
+  volatile uint32_t marker;
+  uint32_t *sp  = (uint32_t *)(((uint32_t)&marker - 64u) & ~3u);
+  uint32_t *bot = (uint32_t *)((uint32_t)sp - C2_STACK_WINDOW);
+  uint32_t *p = bot;
+  while ((p < sp) && (*p == C2_STACK_PAINT)) { p++; }
+  return (uint32_t)((uint32_t)sp - (uint32_t)p);   /* глубина ниже точки заливки, байт */
+}
+
+/* c2load — прогнать encode/decode по режимам, замер тактов DWT; вход: тишина/тон/шум. */
+static void cmd_c2load(int argc, char **argv)
+{
+  static const struct { int mode; const char *name; } ml[] = {
+    { CODEC2_MODE_3200, "3200" }, { CODEC2_MODE_2400, "2400" },
+    { CODEC2_MODE_1600, "1600" }, { CODEC2_MODE_1300, "1300" },
+    { CODEC2_MODE_700C, "700C" },
+  };
+  uint32_t cyc_us = SystemCoreClock / 1000000u;
+  int mi;
+  (void)argc; (void)argv;
+
+  c2_stack_paint();
+  Console_Write("c2load Codec2 8kHz, 30 iter/input, worst of silence/tone/noise (-O2 hard-float):\r\n");
+  Console_Write("mode  enc_max enc_avg dec_max dec_avg frame enc%  dec%  stateRAM\r\n");
+
+  for (mi = 0; mi < (int)(sizeof(ml) / sizeof(ml[0])); mi++)
+  {
+    struct CODEC2 *c2;
+    c2PoolHigh = 0u;                       /* high-water для этого экземпляра */
+    c2 = codec2_create(ml[mi].mode);
+    if (c2 == NULL) { Console_Printf("%-5s create failed (pool too small)\r\n", ml[mi].name); continue; }
+    {
+      int      nsam = codec2_samples_per_frame(c2);
+      uint32_t stateRam = c2PoolHigh;
+      uint32_t frame_us = (uint32_t)nsam * 1000000u / 8000u;
+      uint32_t eMax = 0u, eSum = 0u, dMax = 0u, dSum = 0u, cnt = 0u, seed = 22222u;
+      short          sp_in[320], sp_out[320];
+      unsigned char  bits[16];
+      int inp, it, i;
+      if (nsam > 320) { nsam = 320; }
+      for (inp = 0; inp < 3; inp++)
+      {
+        for (i = 0; i < nsam; i++)
+        {
+          if      (inp == 0) { sp_in[i] = 0; }
+          else if (inp == 1) { sp_in[i] = toneLUT[i & 0x0F]; }
+          else { seed = seed * 1103515245u + 12345u; sp_in[i] = (short)(seed >> 16); }
+        }
+        for (it = 0; it < 30; it++)
+        {
+          uint32_t t0, d;
+          t0 = DWT->CYCCNT; codec2_encode(c2, bits, sp_in);  d = (uint32_t)(DWT->CYCCNT - t0);
+          if (d > eMax) { eMax = d; } eSum += d;
+          t0 = DWT->CYCCNT; codec2_decode(c2, sp_out, bits); d = (uint32_t)(DWT->CYCCNT - t0);
+          if (d > dMax) { dMax = d; } dSum += d;
+          cnt++;
+        }
+      }
+      {
+        uint32_t eMu = eMax / cyc_us, eAu = (eSum / cnt) / cyc_us;
+        uint32_t dMu = dMax / cyc_us, dAu = (dSum / cnt) / cyc_us;
+        uint32_t fus = (frame_us != 0u) ? frame_us : 1u;
+        Console_Printf("%-5s %6lu %6lu %6lu %6lu %3lums %3lu%% %3lu%% %5luB\r\n",
+                       ml[mi].name, (unsigned long)eMu, (unsigned long)eAu,
+                       (unsigned long)dMu, (unsigned long)dAu, (unsigned long)(frame_us / 1000u),
+                       (unsigned long)((eMu * 100u) / fus),
+                       (unsigned long)((dMu * 100u) / fus), (unsigned long)stateRam);
+      }
+    }
+    codec2_destroy(c2);
+  }
+  Console_Printf("c2load: pool %luB, stack used in bench = %lu B (paint window %lu)\r\n",
+                 (unsigned long)C2_POOL_BYTES, (unsigned long)c2_stack_used(),
+                 (unsigned long)C2_STACK_WINDOW);
+}
+
 static const console_cmd_t k_cmds[] =
 {
   { "send",     "send [n] test packets",                    cmd_send     },
@@ -640,6 +763,7 @@ static const console_cmd_t k_cmds[] =
   { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
   { "load",     "codec core load (us/block, %)",            cmd_load     },
+  { "c2load",   "Codec2 encode/decode load (bench, no path)", cmd_c2load },
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
