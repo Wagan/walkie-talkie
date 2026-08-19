@@ -26,14 +26,21 @@ codebooknewamp1_energy.c`) в исходниках Codec2 **генерируют
 
 ## Как собрана `Lib/libcodec2_cm4.a`
 
-Тем же тулчейном, что и проект (GNU Tools for STM32 12.3.1), с ABI-флагами проекта и **-O2**:
+Тем же тулчейном, что и проект (GNU Tools for STM32 12.3.1), с ABI-флагами проекта:
 
 ```
--mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -std=gnu11 -O2
--ffunction-sections -fdata-sections -D__EMBEDDED__ -I src
+-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -std=gnu11
+-O3 -fsingle-precision-constant -ffunction-sections -fdata-sections -D__EMBEDDED__ -I src
 ```
 
-- `-O2` — штатная оптимизация библиотеки (её код не подгонялся под нас; замер «как есть»).
+- `-O3 -fsingle-precision-constant` — стандартные флаги (не правка исходников). `-fsingle-precision-
+  constant` убирает почти всю эмуляцию double: soft-float `__aeabi_dadd/dmul/ddiv/dsub` в объектах
+  падает **с 39 до 2 ссылок** (nm) — double шёл из констант `M_PI/PI/TWO_PI` и литералов
+  (объявленных `double` в коде нет). Остаток (floor/pow/round) — редкие double-libm-вызовы; убрать
+  их без правки исходников можно только `-ffast-math` (меняет семантику → риск качества, не
+  применялось). Меняет точность констант — качество речи проверить перед аудио-интеграцией.
+- Прежняя сборка `961e9a2` была `-O2` без `-fsingle-precision-constant` (39 double-ссылок) — на ней
+  снят первый замер (~2× бюджета). См. `docs/REPORT_codec2_stack_and_speed.md`.
 - `-D__EMBEDDED__` — кодовые книги идут в **flash** (`static const`), а аллокатор Codec2
   становится внешним: библиотека зовёт **`codec2_malloc/codec2_calloc/codec2_free`**, которые
   предоставляет наш код (`App/Labs/speech.c`, статический пул — без кучи).

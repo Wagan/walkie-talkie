@@ -630,7 +630,7 @@ static void cmd_budget(int argc, char **argv)
  * состояния). bump со сбросом при возврате счётчика аллокаций к нулю (create/destroy
  * сбалансированы); high-water консервативен (включает не переиспользуемые временные буферы
  * времени create). */
-#define C2_POOL_BYTES 40960u
+#define C2_POOL_BYTES 16384u    /* state ~9.4КБ (замерено); 16К с запасом, освобождает bss под стек */
 static uint8_t  c2Pool[C2_POOL_BYTES] __attribute__((aligned(8)));
 static uint32_t c2PoolTop = 0u, c2PoolCnt = 0u, c2PoolHigh = 0u;
 
@@ -657,28 +657,29 @@ void codec2_free(void *ptr)
   if (c2PoolCnt == 0u) { c2PoolTop = 0u; }   /* всё освобождено (destroy) → сброс пула */
 }
 
-/* Оценка расхода стека заливкой известным значением ниже текущего SP (высокая вода). */
-#define C2_STACK_PAINT   0xA5A5A5A5u
-#define C2_STACK_WINDOW  40960u
-static void c2_stack_paint(void)
+/* Честный (несатурируемый) замер расхода стека. Заливаем ВСЮ свободную область стека — от конца
+ * bss/кучи (символ линкера `end`) до текущего SP минус запас — и после операции считаем, докуда
+ * стек дошёл вниз. Область гарантированно только стековая (выше bss/пула), поэтому не-стековые
+ * записи её не портят; окно = вся свободная RAM под стек (десятки КБ) → результат не насыщается. */
+extern char end[];              /* конец bss / начало кучи (линкер) */
+extern uint32_t _estack;        /* верх стека (линкер) */
+#define STK_PAT    0xA5A5A5A5u
+#define STK_GUARD  512u          /* пропуск под кадры самих paint/used (выше заливаемой зоны) */
+static uint32_t stk_bottom(void) { return (((uint32_t)end + 0x600u) + 3u) & ~3u; }  /* +куча+запас */
+static void stk_paint(uint32_t top)
 {
-  volatile uint32_t marker;
-  uint32_t *sp  = (uint32_t *)(((uint32_t)&marker - 64u) & ~3u);
-  uint32_t *bot = (uint32_t *)((uint32_t)sp - C2_STACK_WINDOW);
-  uint32_t *p;
-  for (p = bot; p < sp; p++) { *p = C2_STACK_PAINT; }
+  uint32_t *p = (uint32_t *)stk_bottom();
+  while ((uint32_t)p < top) { *p++ = STK_PAT; }
 }
-static uint32_t c2_stack_used(void)
+static uint32_t stk_used(uint32_t top)   /* байт стека ниже top, задетых после заливки */
 {
-  volatile uint32_t marker;
-  uint32_t *sp  = (uint32_t *)(((uint32_t)&marker - 64u) & ~3u);
-  uint32_t *bot = (uint32_t *)((uint32_t)sp - C2_STACK_WINDOW);
-  uint32_t *p = bot;
-  while ((p < sp) && (*p == C2_STACK_PAINT)) { p++; }
-  return (uint32_t)((uint32_t)sp - (uint32_t)p);   /* глубина ниже точки заливки, байт */
+  uint32_t *p = (uint32_t *)stk_bottom();
+  while (((uint32_t)p < top) && (*p == STK_PAT)) { p++; }
+  return (top - (uint32_t)p) + STK_GUARD;
 }
 
-/* c2load — прогнать encode/decode по режимам, замер тактов DWT; вход: тишина/тон/шум. */
+/* c2load — encode/decode по режимам (замер тактов DWT, вход тишина/тон/шум) + честный расход
+ * стека раздельно на create/encode/decode. Тракт не трогает. */
 static void cmd_c2load(int argc, char **argv)
 {
   static const struct { int mode; const char *name; } ml[] = {
@@ -686,63 +687,82 @@ static void cmd_c2load(int argc, char **argv)
     { CODEC2_MODE_1600, "1600" }, { CODEC2_MODE_1300, "1300" },
     { CODEC2_MODE_700C, "700C" },
   };
+  int      nml = (int)(sizeof(ml) / sizeof(ml[0]));
   uint32_t cyc_us = SystemCoreClock / 1000000u;
+  uint32_t sCre[5] = {0}, sEnc[5] = {0}, sDec[5] = {0}, stRam[5] = {0}, stkMax = 0u;
   int mi;
   (void)argc; (void)argv;
 
-  c2_stack_paint();
   Console_Write("c2load Codec2 8kHz, 30 iter/input, worst of silence/tone/noise (-O2 hard-float):\r\n");
   Console_Write("mode  enc_max enc_avg dec_max dec_avg frame enc%  dec%  stateRAM\r\n");
 
-  for (mi = 0; mi < (int)(sizeof(ml) / sizeof(ml[0])); mi++)
+  for (mi = 0; mi < nml; mi++)
   {
     struct CODEC2 *c2;
-    c2PoolHigh = 0u;                       /* high-water для этого экземпляра */
-    c2 = codec2_create(ml[mi].mode);
+    uint32_t top = (__get_MSP() - STK_GUARD) & ~3u;   /* верх заливаемой зоны (ниже наших кадров) */
+    short          sp_in[320], sp_out[320];
+    unsigned char  bits[16];
+    int nsam, inp, it, i;
+    uint32_t frame_us, eMax = 0u, eSum = 0u, dMax = 0u, dSum = 0u, cnt = 0u, seed = 22222u;
+
+    c2PoolHigh = 0u;
+    stk_paint(top); c2 = codec2_create(ml[mi].mode); sCre[mi] = stk_used(top);
     if (c2 == NULL) { Console_Printf("%-5s create failed (pool too small)\r\n", ml[mi].name); continue; }
+    stRam[mi] = c2PoolHigh;
+    nsam = codec2_samples_per_frame(c2);
+    if (nsam > 320) { nsam = 320; }
+    frame_us = (uint32_t)nsam * 1000000u / 8000u;
+
+    for (i = 0; i < nsam; i++) { seed = seed * 1103515245u + 12345u; sp_in[i] = (short)(seed >> 16); }
+    stk_paint(top); codec2_encode(c2, bits, sp_in);  sEnc[mi] = stk_used(top);
+    stk_paint(top); codec2_decode(c2, sp_out, bits); sDec[mi] = stk_used(top);
+    if (sCre[mi] > stkMax) { stkMax = sCre[mi]; }
+    if (sEnc[mi] > stkMax) { stkMax = sEnc[mi]; }
+    if (sDec[mi] > stkMax) { stkMax = sDec[mi]; }
+
+    for (inp = 0; inp < 3; inp++)
     {
-      int      nsam = codec2_samples_per_frame(c2);
-      uint32_t stateRam = c2PoolHigh;
-      uint32_t frame_us = (uint32_t)nsam * 1000000u / 8000u;
-      uint32_t eMax = 0u, eSum = 0u, dMax = 0u, dSum = 0u, cnt = 0u, seed = 22222u;
-      short          sp_in[320], sp_out[320];
-      unsigned char  bits[16];
-      int inp, it, i;
-      if (nsam > 320) { nsam = 320; }
-      for (inp = 0; inp < 3; inp++)
+      for (i = 0; i < nsam; i++)
       {
-        for (i = 0; i < nsam; i++)
-        {
-          if      (inp == 0) { sp_in[i] = 0; }
-          else if (inp == 1) { sp_in[i] = toneLUT[i & 0x0F]; }
-          else { seed = seed * 1103515245u + 12345u; sp_in[i] = (short)(seed >> 16); }
-        }
-        for (it = 0; it < 30; it++)
-        {
-          uint32_t t0, d;
-          t0 = DWT->CYCCNT; codec2_encode(c2, bits, sp_in);  d = (uint32_t)(DWT->CYCCNT - t0);
-          if (d > eMax) { eMax = d; } eSum += d;
-          t0 = DWT->CYCCNT; codec2_decode(c2, sp_out, bits); d = (uint32_t)(DWT->CYCCNT - t0);
-          if (d > dMax) { dMax = d; } dSum += d;
-          cnt++;
-        }
+        if      (inp == 0) { sp_in[i] = 0; }
+        else if (inp == 1) { sp_in[i] = toneLUT[i & 0x0F]; }
+        else { seed = seed * 1103515245u + 12345u; sp_in[i] = (short)(seed >> 16); }
       }
+      for (it = 0; it < 30; it++)
       {
-        uint32_t eMu = eMax / cyc_us, eAu = (eSum / cnt) / cyc_us;
-        uint32_t dMu = dMax / cyc_us, dAu = (dSum / cnt) / cyc_us;
-        uint32_t fus = (frame_us != 0u) ? frame_us : 1u;
-        Console_Printf("%-5s %6lu %6lu %6lu %6lu %3lums %3lu%% %3lu%% %5luB\r\n",
-                       ml[mi].name, (unsigned long)eMu, (unsigned long)eAu,
-                       (unsigned long)dMu, (unsigned long)dAu, (unsigned long)(frame_us / 1000u),
-                       (unsigned long)((eMu * 100u) / fus),
-                       (unsigned long)((dMu * 100u) / fus), (unsigned long)stateRam);
+        uint32_t t0, d;
+        t0 = DWT->CYCCNT; codec2_encode(c2, bits, sp_in);  d = (uint32_t)(DWT->CYCCNT - t0);
+        if (d > eMax) { eMax = d; } eSum += d;
+        t0 = DWT->CYCCNT; codec2_decode(c2, sp_out, bits); d = (uint32_t)(DWT->CYCCNT - t0);
+        if (d > dMax) { dMax = d; } dSum += d;
+        cnt++;
       }
+    }
+    {
+      uint32_t eMu = eMax / cyc_us, eAu = (eSum / cnt) / cyc_us;
+      uint32_t dMu = dMax / cyc_us, dAu = (dSum / cnt) / cyc_us;
+      uint32_t fus = (frame_us != 0u) ? frame_us : 1u;
+      Console_Printf("%-5s %6lu %6lu %6lu %6lu %3lums %3lu%% %3lu%% %5luB\r\n",
+                     ml[mi].name, (unsigned long)eMu, (unsigned long)eAu,
+                     (unsigned long)dMu, (unsigned long)dAu, (unsigned long)(frame_us / 1000u),
+                     (unsigned long)((eMu * 100u) / fus),
+                     (unsigned long)((dMu * 100u) / fus), (unsigned long)stRam[mi]);
     }
     codec2_destroy(c2);
   }
-  Console_Printf("c2load: pool %luB, stack used in bench = %lu B (paint window %lu)\r\n",
-                 (unsigned long)C2_POOL_BYTES, (unsigned long)c2_stack_used(),
-                 (unsigned long)C2_STACK_WINDOW);
+
+  Console_Write("stack (bytes, honest paint): mode create encode decode\r\n");
+  for (mi = 0; mi < nml; mi++)
+  {
+    Console_Printf("  %-5s %6lu %6lu %6lu\r\n", ml[mi].name,
+                   (unsigned long)sCre[mi], (unsigned long)sEnc[mi], (unsigned long)sDec[mi]);
+  }
+  {
+    uint32_t freeStk = (uint32_t)&_estack - ((uint32_t)end + 0x200u);   /* область под стек, байт */
+    Console_Printf("c2load: state pool high=%luB/%lu; stack max=%luB; free stack region ~%luB (margin ~%luB)\r\n",
+                   (unsigned long)stRam[0], (unsigned long)C2_POOL_BYTES, (unsigned long)stkMax,
+                   (unsigned long)freeStk, (unsigned long)(freeStk - stkMax));
+  }
 }
 
 static const console_cmd_t k_cmds[] =
