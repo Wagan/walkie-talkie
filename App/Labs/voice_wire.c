@@ -27,6 +27,7 @@
 #include "uart_port.h"
 #include "frame.h"
 #include "audio.h"
+#include "preempt.h"
 #include "trace_log.h"
 #include "stm32f4xx_hal.h"
 #include "stm32f411e_discovery.h"         /* LED + кнопка PA0 (BSP_PB) */
@@ -269,6 +270,7 @@ static void cmd_reset(int argc, char **argv)
   /* Счётчики протокола нашего приёмного автомата (состояние FSM не трогаем). */
   rxDec.stats.framesRx = 0u; rxDec.stats.framesCrc = 0u;
   rxDec.stats.resync = 0u; rxDec.stats.bytesDropped = 0u;
+  Audio_ResetOutProbe();   /* probeA: обнулить и задать базу «секунд от старта» */
   Console_Write("counters reset\r\n");
 }
 
@@ -303,6 +305,7 @@ static void cmd_baud(int argc, char **argv)
   b = strtoul(argv[1], NULL, 0);
   if ((b < 1200ul) || (b > 3000000ul)) { Console_Write("baud out of range\r\n"); return; }
   UartPort_SetBaud((uint32_t)b);
+  Preempt_AudioOutHighest();   /* реинит USART2 сбросил его приоритет — переустановить */
   Console_Printf("baud set to %lu\r\n", (unsigned long)UartPort_GetBaud());
 }
 
@@ -322,6 +325,14 @@ static void cmd_voice(int argc, char **argv)
   Console_Printf("voice: rx errors ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
                  (unsigned long)s.errOre, (unsigned long)s.errFe,
                  (unsigned long)s.errPe, (unsigned long)s.errNe);
+  /* probeA (audio.c): срывы 1-мс дедлайна пере-взвода аудио-выхода — критерий вытеснения. */
+  {
+    Audio_OutProbe ap;
+    Audio_GetOutProbe(&ap);
+    Console_Printf("probeA out-rearm: calls=%lu over(>%luus)=%lu max=%luus first=%lus last=%lus\r\n",
+                   (unsigned long)ap.calls, (unsigned long)ap.threshUs, (unsigned long)ap.over,
+                   (unsigned long)ap.maxUs, (unsigned long)ap.firstSec, (unsigned long)ap.lastSec);
+  }
 }
 
 /* proto — статистика протокола кадрирования на ПРИЁМЕ (наш rxDec). */
@@ -377,6 +388,11 @@ uint8_t Lab_Init(void)
 
   BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);   /* кнопка PA0 как PTT */
 
+  /* Счётчик тактов ядра для probe A (диагностика пере-взвода аудио-выхода в audio.c). */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0u;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
   Console_Init();
   Console_Register(k_cmds, (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0])));
 
@@ -390,6 +406,9 @@ uint8_t Lab_Init(void)
     Console_Write("\r\nLAB04: AUDIO INIT FAILED\r\n");
     return 1u;
   }
+
+  /* После всех MspInit: вытеснение, аудио-выход выше приёмного USART2 (лечение провалов звука). */
+  Preempt_AudioOutHighest();
 
   TRACE_LOG("LAB04 voice wire: %u kHz mono, frame=%u ms (%u samples), USART2 %lu 8N1",
             (unsigned)(AUDIO_FREQ_HZ / 1000u), (unsigned)VOICE_MS, (unsigned)VOICE_SAMPLES,
