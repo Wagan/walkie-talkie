@@ -240,9 +240,25 @@ static short   c2SpOut[C2_SPF_MAX];              /* выход декодера 
 static int16_t c2Up[2 * C2_SPF_MAX];             /* после апсемплинга 8→16 */
 static unsigned char c2Bits[16];                 /* закодированный кадр (макс 8 Б: 3200/1600) */
 
-/* Живой замер длительности enc/dec В РАБОЧЕМ ТРАКТЕ (DWT) — печатается в voice (TASK п.5). */
-static volatile uint32_t c2EncMaxCyc = 0u, c2EncSumCyc = 0u, c2EncCnt = 0u;
-static volatile uint32_t c2DecMaxCyc = 0u, c2DecSumCyc = 0u, c2DecCnt = 0u;
+/* Живой замер длительности enc/dec В РАБОЧЕМ ТРАКТЕ (DWT) — печатается в voice (TASK п.5).
+ * Суммы тактов — 64-бит: кадр ~1.2 млн тактов, за тысячи кадров 32-бит переполнился бы (> 4.29e9)
+ * и среднее становилось мусором. cnt/max — по ФАКТИЧЕСКИМ операциям (инкремент только вокруг
+ * реального codec2_encode/decode). Обнуляются при смене режима (c2_get) и по reset, иначе max/avg
+ * смешали бы кадры разных режимов. */
+static volatile uint32_t c2EncMaxCyc = 0u, c2EncCnt = 0u;
+static volatile uint64_t c2EncSumCyc = 0u;
+static volatile uint32_t c2DecMaxCyc = 0u, c2DecCnt = 0u;
+static volatile uint64_t c2DecSumCyc = 0u;
+/* Переполнение SPSC-кольца c2Tx (аудио-ISR не смог положить отсчёт — главный цикл не успел
+ * закодировать). ОТДЕЛЬНЫЙ печатаемый счётчик, чтобы этот путь потери не был молчаливым
+ * (как приёмный qover). Инкремент в ISR, чтение/сброс — в главном цикле. */
+static volatile uint32_t c2TxRingOver = 0u;
+
+static void c2_stats_reset(void)
+{
+  c2EncMaxCyc = 0u; c2EncCnt = 0u; c2EncSumCyc = 0u;
+  c2DecMaxCyc = 0u; c2DecCnt = 0u; c2DecSumCyc = 0u;
+}
 
 /* forward: пул и аллокатор Codec2 определены ниже (общие с командой c2load). Предварительное
  * объявление (tentative) — чтобы c2_get видел флаг «пул исчерпан» до определения аллокатора. */
@@ -263,6 +279,7 @@ static struct CODEC2 *c2_get(int mode)
     return NULL;
   }
   c2instMode = mode;
+  c2_stats_reset();   /* новый режим/экземпляр — живой замер enc/dec с чистого листа */
   return c2inst;
 }
 static void c2_release(void)
@@ -270,14 +287,16 @@ static void c2_release(void)
   if (c2inst != NULL) { codec2_destroy(c2inst); c2inst = NULL; c2instMode = -1; }
 }
 
-/* Кольцо c2Tx: производитель (ISR). Переполнение — считаем cTxDrop (не молча). */
+/* Кольцо c2Tx: производитель (ISR). Переполнение — свой счётчик c2TxRingOver (печатается в voice),
+ * НЕ сваливаем в txdrop: это разные причины (кольцо = главный цикл не успел кодировать; txdrop =
+ * отказ отправки готового кадра). При здоровом тракте 0. */
 static void c2tx_push(const int16_t *s, uint16_t n)
 {
   uint16_t i;
   for (i = 0u; i < n; i++)
   {
     uint16_t nx = (uint16_t)((c2TxHead + 1u) & C2TX_MASK);
-    if (nx == c2TxTail) { cTxDrop++; return; }
+    if (nx == c2TxTail) { c2TxRingOver++; return; }
     c2Tx[c2TxHead] = s[i]; c2TxHead = nx;
   }
 }
@@ -632,8 +651,8 @@ static void cmd_reset(int argc, char **argv)
   UartPort_ResetRxIsrProbe();   /* диагностика B */
   fqHead = fqTail = 0u; cQover = 0u;           /* очередь кадров offload */
   loopMaxCyc = 0u; loopHavePrev = 0u;          /* probeC: период Lab_Process */
-  c2EncMaxCyc = c2EncSumCyc = c2EncCnt = 0u;   /* codec2 живой замер enc */
-  c2DecMaxCyc = c2DecSumCyc = c2DecCnt = 0u;   /* codec2 живой замер dec */
+  c2_stats_reset();                            /* codec2 живой замер enc/dec */
+  c2TxRingOver = 0u;                           /* codec2: переполнение TX-кольца */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -669,10 +688,13 @@ static void cmd_voice(int argc, char **argv)
   if (g_codec == (uint8_t)WIRE_CODEC2)
   {
     uint32_t cyc_us = SystemCoreClock / 1000000u;
-    uint32_t eMax = c2EncMaxCyc / cyc_us, eAvg = (c2EncCnt != 0u) ? ((c2EncSumCyc / c2EncCnt) / cyc_us) : 0u;
-    uint32_t dMax = c2DecMaxCyc / cyc_us, dAvg = (c2DecCnt != 0u) ? ((c2DecSumCyc / c2DecCnt) / cyc_us) : 0u;
-    Console_Printf("codec2: mode=%s frame=%ums | enc max=%luus avg=%luus (n=%lu) | dec max=%luus avg=%luus (n=%lu)\r\n",
+    uint32_t eMax = c2EncMaxCyc / cyc_us;
+    uint32_t eAvg = (c2EncCnt != 0u) ? (uint32_t)((c2EncSumCyc / c2EncCnt) / cyc_us) : 0u;
+    uint32_t dMax = c2DecMaxCyc / cyc_us;
+    uint32_t dAvg = (c2DecCnt != 0u) ? (uint32_t)((c2DecSumCyc / c2DecCnt) / cyc_us) : 0u;
+    Console_Printf("codec2: mode=%s frame=%ums ring_over=%lu | enc max=%luus avg=%luus (n=%lu) | dec max=%luus avg=%luus (n=%lu)\r\n",
                    c2ModeTab[g_c2mode].name, (unsigned)c2ModeTab[g_c2mode].frameMs,
+                   (unsigned long)c2TxRingOver,
                    (unsigned long)eMax, (unsigned long)eAvg, (unsigned long)c2EncCnt,
                    (unsigned long)dMax, (unsigned long)dAvg, (unsigned long)c2DecCnt);
   }
