@@ -77,6 +77,21 @@ static volatile uint16_t g_toneHz = 1000u;              /* частота тон
 static uint8_t           g_pttCmd = 0u;
 static volatile uint8_t  g_c2mode = 0u;                 /* индекс режима Codec2 в c2ModeTab (0 = 3200) */
 
+/* Запас по уровню (headroom) ПЕРЕД кодеком (TASK_input_headroom). Микрофонный PDM-фильтр BSP отдаёт
+ * PCM с высоким фиксированным усилением (mic_gain=24, BSP не трогаем); на громкой речи отсчёты
+ * подходят к полной шкале → насыщение (FIR, предсказатель ADPCM) и перегрузка ADPCM по крутизне =
+ * хрип (docs/REPORT_adpcm_overload_recon.md). Лечим аттенюацией мик-PCM в НАШЕМ коде (LAB07-локально,
+ * audio.c/LAB00/LAB04 не трогаем). Усиление — Q8 (256 = ×1 = 0 дБ), целочисленно, без деления в
+ * горячем пути. Тон (test-сигнал) НЕ аттенюируется — он подменяет сигнал уже в tx_flush. */
+#define HR_NEAR_FS   32000                             /* |отсчёт| >= порога = «подход к полной шкале» (~0.2 дБ от FS) */
+static volatile uint16_t g_hrGain = 128u;              /* Q8-усиление: 128 = ×0.5 = −6 дБ (провизорный дефолт) */
+static volatile uint8_t  g_hrDb   = 6u;                /* аттенюация в дБ (для печати) */
+
+/* Измеритель уровня: пик |PCM| и число отсчётов у полной шкалы — ДО и ПОСЛЕ аттенюации (мик-путь,
+ * только при передаче). Пишет аудио-ISR (единственный писатель), читает voice; сброс — reset. */
+static volatile int32_t  hrPeakPre = 0, hrPeakPost = 0;
+static volatile uint32_t hrClipPre = 0u, hrClipPost = 0u;
+
 /* ================= ПЕРЕДАЧА (аудио-ISR) ================= */
 static int16_t  acc16[SAMP16];
 static uint16_t accN = 0u;
@@ -381,8 +396,26 @@ void Audio_OnCapture(const int16_t *mono, uint16_t n)
   if (g_ptt == 0u) { return; }
   for (i = 0u; i < n; i++)
   {
-    /* Накапливаем звук с микрофона; подмена на тон — в tx_flush на рабочей частоте. */
-    acc16[accN++] = mono[i];
+    int16_t s = mono[i];
+    int32_t m = (s < 0) ? -(int32_t)s : (int32_t)s;      /* |отсчёт| ДО аттенюации — что даёт микрофон */
+    int32_t a;
+    int16_t sa;
+    if (m > hrPeakPre) { hrPeakPre = m; }
+    if (m >= HR_NEAR_FS) { hrClipPre++; }
+
+    /* Аттенюация Q8 (256 = ×1), без деления: даёт кодеку запас по уровню, снимает перегрузку ADPCM
+     * по крутизне и клиппинг FIR на громкой речи. Насыщение сохранено (при усилении ≤ ×1 переполнить
+     * нельзя, но клампим для строгости). */
+    a = ((int32_t)s * (int32_t)g_hrGain) >> 8;
+    if (a > 32767) { a = 32767; } else if (a < -32768) { a = -32768; }
+    sa = (int16_t)a;
+
+    m = (sa < 0) ? -(int32_t)sa : (int32_t)sa;           /* |отсчёт| ПОСЛЕ аттенюации — что уходит в кодек */
+    if (m > hrPeakPost) { hrPeakPost = m; }
+    if (m >= HR_NEAR_FS) { hrClipPost++; }
+
+    /* Накапливаем звук с микрофона; подмена на тон — в tx_flush (тон НЕ аттенюируется). */
+    acc16[accN++] = sa;
     if (accN >= SAMP16) { tx_flush(); }
   }
 }
@@ -653,6 +686,7 @@ static void cmd_reset(int argc, char **argv)
   loopMaxCyc = 0u; loopHavePrev = 0u;          /* probeC: период Lab_Process */
   c2_stats_reset();                            /* codec2 живой замер enc/dec */
   c2TxRingOver = 0u;                           /* codec2: переполнение TX-кольца */
+  hrPeakPre = hrPeakPost = 0; hrClipPre = hrClipPost = 0u;   /* headroom измеритель уровня */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -684,6 +718,12 @@ static void cmd_voice(int argc, char **argv)
                    (unsigned long)cQover, (unsigned)FQ_DEPTH,
                    (unsigned long)(loopMaxCyc / (SystemCoreClock / 1000000u)));
   }
+  /* Измеритель уровня и запас (TASK_input_headroom): pre = микрофон как есть, post = что уходит в
+   * кодек после аттенюации. nearFS>0 = подход к полной шкале (перегрузка). Меряется при передаче. */
+  Console_Printf("headroom: atten=%udB gainQ8=%u | pre peak=%ld nearFS=%lu | post peak=%ld nearFS=%lu (thr=%d)\r\n",
+                 (unsigned)g_hrDb, (unsigned)g_hrGain,
+                 (long)hrPeakPre, (unsigned long)hrClipPre,
+                 (long)hrPeakPost, (unsigned long)hrClipPost, (int)HR_NEAR_FS);
   /* Codec2: живой замер enc/dec в рабочем тракте (TASK п.5) — цена именно живой речи, а не синтетики. */
   if (g_codec == (uint8_t)WIRE_CODEC2)
   {
@@ -768,6 +808,27 @@ static void cmd_c2mode(int argc, char **argv)
   }
   Console_Printf("c2mode = %s (%lu bps, %u ms frame)\r\n", c2ModeTab[g_c2mode].name,
                  (unsigned long)c2ModeTab[g_c2mode].bps, (unsigned)c2ModeTab[g_c2mode].frameMs);
+}
+
+/* headroom [0|3|6|9|12] — аттенюация микрофонного PCM ДО кодека, дБ (запас по уровню против
+ * перегрузки на громкой речи). 0 = без аттенюации (демонстрация перегрузки для методички). Уровень
+ * подбирается по измерителю в voice; дефолт см. docs/REPORT_input_headroom.md. */
+static void cmd_headroom(int argc, char **argv)
+{
+  static const struct { uint8_t db; uint16_t gainQ8; } tab[] = {
+    { 0u, 256u }, { 3u, 181u }, { 6u, 128u }, { 9u, 91u }, { 12u, 64u },
+  };
+  int n = (int)(sizeof(tab) / sizeof(tab[0])), k;
+  if (argc > 1)
+  {
+    unsigned long d = strtoul(argv[1], NULL, 0);
+    int found = -1;
+    for (k = 0; k < n; k++) { if ((unsigned long)tab[k].db == d) { found = k; } }
+    if (found < 0) { Console_Write("usage: headroom 0|3|6|9|12 (dB attenuation before codec)\r\n"); return; }
+    g_hrDb = tab[found].db; g_hrGain = tab[found].gainQ8;
+  }
+  Console_Printf("headroom = %u dB (gainQ8=%u, x%u/256)\r\n",
+                 (unsigned)g_hrDb, (unsigned)g_hrGain, (unsigned)g_hrGain);
 }
 
 /* decim [fir|avg] — метод децимации 16→8 (действует только при rate 8000):
@@ -1085,6 +1146,7 @@ static const console_cmd_t k_cmds[] =
   { "tone",     "tone on [freq]|off (default 1 kHz)",       cmd_tone     },
   { "codec",    "codec raw|ulaw|adpcm|codec2",              cmd_codec    },
   { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
+  { "headroom", "mic atten before codec (0|3|6|9|12 dB)",   cmd_headroom },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
   { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
