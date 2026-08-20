@@ -75,6 +75,7 @@ static volatile uint8_t  g_ptt   = 0u;
 static volatile uint8_t  g_tone  = 0u;
 static volatile uint16_t g_toneHz = 1000u;              /* частота тона (Гц), по умолчанию 1 кГц */
 static uint8_t           g_pttCmd = 0u;
+static volatile uint8_t  g_c2mode = 0u;                 /* индекс режима Codec2 в c2ModeTab (0 = 3200) */
 
 /* ================= ПЕРЕДАЧА (аудио-ISR) ================= */
 static int16_t  acc16[SAMP16];
@@ -190,6 +191,105 @@ static void aa_decimate(const int16_t *src16, int16_t *out8)
   for (k = 0u; k < (AA_TAPS - 1u); k++) { aaHist[k] = src16[SAMP16 - (AA_TAPS - 1u) + k]; }
 }
 
+/* ================= ИНТЕГРАЦИЯ CODEC2 (TASK_codec2_integration) =================
+ * Codec2 — четвёртый кодек лесенки, ВСЕГДА 8 кГц (аппаратный тракт 16 кГц → децимация 16→8
+ * тем же FIR-антиалиасом, что и legacy 8к). Отличия от legacy кодеков:
+ *  1) кадр вокодера = 160 (3200/2400) или 320 (1600/1300/700C) отсчётов @8кГц (20/40 мс), а не
+ *     5-мс блок. Один вокодерный кадр укладывается в ОДИН проводной SLIP-кадр; заголовок несёт
+ *     индекс режима (5-й байт) — приёмник создаёт декодер под тот же режим;
+ *  2) кодирование/декодирование ДОРОГИЕ (десятки мс) → выполняются в ГЛАВНОМ ЦИКЛЕ, не в ISR:
+ *     TX — аудио-ISR лишь децимирует блок и кладёт отсчёты 8кГц в SPSC-кольцо c2Tx; кодирование
+ *     и отправку делает c2_tx_process() из Lab_Process. RX — codec2_decode в voice_sink, который
+ *     и так уносится в Lab_Process через rx_drain. Длинных __disable_irq НЕ вводим (иначе вернём
+ *     дефект пере-взвода аудио-выхода).
+ * Аллокатор Codec2 (codec2_malloc, ниже) — bump-пул со сбросом при возврате счётчика выделений к
+ * нулю: держим ОДИН экземпляр (c2inst) — его хватает и кодеру, и декодеру (полудуплекс, направления
+ * не пересекаются во времени). Смена режима → destroy старого (счётчик → 0, пул сброшен) + create
+ * нового, поэтому многократная смена не исчерпывает пул. Все обращения к пулу — только из главного
+ * цикла (TX-encode, RX-decode, c2load), гонок нет. */
+#define WIRE_CODEC2     3u                       /* id кодека Codec2 в заголовке кадра (вне codec.c) */
+#define VOICE_HDR_C2    (VOICE_HDR + 1u)          /* заголовок кадра Codec2: base(4) + индекс режима(1) */
+#define C2_MODE_COUNT   5u
+#define C2_SPF_MAX      320                       /* макс. отсчётов на кадр вокодера (@8кГц) */
+
+/* Таблица режимов: константа Codec2, имя, битрейт (для budget), длительность кадра (для печати).
+ * Битрейт/длительность — документированные параметры режимов Codec2 (samples_per_frame/bits берём
+ * из библиотеки в рантайме, тут — только для human-readable вывода). */
+static const struct { int mode; const char *name; uint32_t bps; uint16_t frameMs; } c2ModeTab[C2_MODE_COUNT] =
+{
+  { CODEC2_MODE_3200, "3200", 3200u, 20u },
+  { CODEC2_MODE_2400, "2400", 2400u, 20u },
+  { CODEC2_MODE_1600, "1600", 1600u, 40u },
+  { CODEC2_MODE_1300, "1300", 1300u, 40u },
+  { CODEC2_MODE_700C, "700C",  700u, 40u },
+};
+
+static struct CODEC2 *c2inst    = NULL;          /* текущий экземпляр (enc+dec) */
+static int            c2instMode = -1;           /* его режим (константа CODEC2_MODE_*), -1 — нет */
+
+/* SPSC-кольцо отсчётов 8кГц: производитель — аудио-ISR (c2tx_push), потребитель — Lab_Process. */
+#define C2TX_SIZE       1024u
+#define C2TX_MASK       (C2TX_SIZE - 1u)
+static int16_t          c2Tx[C2TX_SIZE];
+static volatile uint16_t c2TxHead = 0u;          /* пишет только ISR */
+static volatile uint16_t c2TxTail = 0u;          /* пишет только Lab_Process */
+
+/* Рабочие буферы вокодера (только главный цикл; TX и RX не пересекаются — полудуплекс). */
+static short   c2SpIn[C2_SPF_MAX];               /* вход кодера (8кГц) */
+static short   c2SpOut[C2_SPF_MAX];              /* выход декодера (8кГц) */
+static int16_t c2Up[2 * C2_SPF_MAX];             /* после апсемплинга 8→16 */
+static unsigned char c2Bits[16];                 /* закодированный кадр (макс 8 Б: 3200/1600) */
+
+/* Живой замер длительности enc/dec В РАБОЧЕМ ТРАКТЕ (DWT) — печатается в voice (TASK п.5). */
+static volatile uint32_t c2EncMaxCyc = 0u, c2EncSumCyc = 0u, c2EncCnt = 0u;
+static volatile uint32_t c2DecMaxCyc = 0u, c2DecSumCyc = 0u, c2DecCnt = 0u;
+
+/* forward: пул и аллокатор Codec2 определены ниже (общие с командой c2load). Предварительное
+ * объявление (tentative) — чтобы c2_get видел флаг «пул исчерпан» до определения аллокатора. */
+static volatile uint8_t c2PoolFail;
+
+/* Получить экземпляр под нужный режим (создаёт/пересоздаёт по необходимости). NULL при нехватке пула.
+ * Пересоздание: destroy старого возвращает счётчик выделений к 0 → bump-пул сбрасывается, утечки нет. */
+static struct CODEC2 *c2_get(int mode)
+{
+  if ((c2inst != NULL) && (c2instMode == mode)) { return c2inst; }
+  if (c2inst != NULL) { codec2_destroy(c2inst); c2inst = NULL; c2instMode = -1; }
+  c2PoolFail = 0u;
+  c2inst = codec2_create(mode);
+  if ((c2inst == NULL) || (c2PoolFail != 0u))
+  {
+    if (c2inst != NULL) { codec2_destroy(c2inst); c2inst = NULL; }
+    c2instMode = -1;
+    return NULL;
+  }
+  c2instMode = mode;
+  return c2inst;
+}
+static void c2_release(void)
+{
+  if (c2inst != NULL) { codec2_destroy(c2inst); c2inst = NULL; c2instMode = -1; }
+}
+
+/* Кольцо c2Tx: производитель (ISR). Переполнение — считаем cTxDrop (не молча). */
+static void c2tx_push(const int16_t *s, uint16_t n)
+{
+  uint16_t i;
+  for (i = 0u; i < n; i++)
+  {
+    uint16_t nx = (uint16_t)((c2TxHead + 1u) & C2TX_MASK);
+    if (nx == c2TxTail) { cTxDrop++; return; }
+    c2Tx[c2TxHead] = s[i]; c2TxHead = nx;
+  }
+}
+static uint16_t c2tx_avail(void) { return (uint16_t)((c2TxHead - c2TxTail) & C2TX_MASK); }
+
+/* Отображаемое имя кодека: legacy — из codec.c, WIRE_CODEC2 — "codec2". */
+static const char *codec_disp_name(uint8_t c)
+{
+  if (c == (uint8_t)WIRE_CODEC2) { return "codec2"; }
+  return (c < (uint8_t)CODEC_COUNT) ? Codec_Name((codec_id_t)c) : "?";
+}
+
 /* ================= ПЕРЕДАЧА: кодирование блока и отправка (аудио-ISR) ================= */
 static void tx_flush(void)
 {
@@ -219,8 +319,9 @@ static void tx_flush(void)
   }
   else { for (i = 0u; i < SAMP16; i++) { src16[i] = acc16[i]; } }
 
-  /* 2) 8 кГц — децимация 16→8 (FIR-антиалиас или старое усреднение); 16 кГц — без изменений. */
-  if (g_rate == RATE_8K)
+  /* 2) Рабочая частота. Codec2 ВСЕГДА 8 кГц; legacy — по g_rate. Децимация 16→8: FIR-антиалиас
+   *    (или старое усреднение для сравнения). 16 кГц — блок без изменений. */
+  if ((g_codec == WIRE_CODEC2) || (g_rate == RATE_8K))
   {
     if (g_decim == DECIM_FIR) { aa_decimate(src16, work); }
     else { for (i = 0u; i < SAMP8; i++) { work[i] = (int16_t)(((int32_t)src16[2u * i] + src16[2u * i + 1u]) / 2); } }
@@ -228,6 +329,11 @@ static void tx_flush(void)
   }
   else { for (i = 0u; i < SAMP16; i++) { work[i] = src16[i]; } nsamp = SAMP16; }
 
+  /* 3a) Codec2: кодирование дорогое — здесь лишь кладём отсчёты 8кГц в кольцо, кодирует и шлёт
+   *     главный цикл (c2_tx_process). Блок 5 мс потреблён, seq продвинет отправитель кадра. */
+  if (g_codec == WIRE_CODEC2) { c2tx_push(work, nsamp); accN = 0u; return; }
+
+  /* 3b) Legacy (raw/ulaw/adpcm): кодируем и отправляем прямо здесь (дёшево, единицы мкс). */
   t0 = DWT->CYCCNT;
   enc = Codec_Encode((codec_id_t)g_codec, work, nsamp, txPayload + VOICE_HDR,
                      (uint16_t)(sizeof(txPayload) - VOICE_HDR));
@@ -323,6 +429,50 @@ static void voice_sink(const uint8_t *payload, uint16_t len)
   seq    = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
   fcodec = payload[2];
   frate  = payload[3];
+
+  /* Codec2: заголовок несёт индекс режима (5-й байт). Создаём/берём декодер под этот режим,
+   * декодируем кадр вокодера (spf отсчётов @8кГц), апсемплим 8→16 и кладём в джиттер-буфер.
+   * Потери по seq заполняем тишиной на длину ОДНОГО вокодерного кадра (2*spf отсчётов @16кГц),
+   * а не 5-мс блока — иначе timeline поехал бы (см. отчёт: как читать счётчики). */
+  if (fcodec == (uint8_t)WIRE_CODEC2)
+  {
+    struct CODEC2 *c2;
+    uint16_t frame16;
+    int      spf, bpf;
+    uint8_t  midx;
+    if (len < (uint16_t)VOICE_HDR_C2) { return; }
+    midx = payload[4];
+    if (midx >= (uint8_t)C2_MODE_COUNT) { return; }
+    c2 = c2_get(c2ModeTab[midx].mode);
+    if (c2 == NULL) { return; }
+    spf = codec2_samples_per_frame(c2);
+    bpf = codec2_bytes_per_frame(c2);
+    if (spf > C2_SPF_MAX) { spf = C2_SPF_MAX; }
+    if ((uint16_t)(len - VOICE_HDR_C2) < (uint16_t)bpf) { return; }
+
+    t0 = DWT->CYCCNT;
+    codec2_decode(c2, c2SpOut, payload + VOICE_HDR_C2);
+    { uint32_t d = (uint32_t)(DWT->CYCCNT - t0);
+      if (d > c2DecMaxCyc) { c2DecMaxCyc = d; } c2DecSumCyc += d; c2DecCnt++; }
+
+    outn = 0u;                                    /* апсемплинг 8→16 линейной интерполяцией */
+    for (i = 0u; i < (uint16_t)spf; i++)
+    {
+      c2Up[outn++] = c2SpOut[i];
+      c2Up[outn++] = ((i + 1u) < (uint16_t)spf) ? (int16_t)(((int32_t)c2SpOut[i] + c2SpOut[i + 1u]) / 2) : c2SpOut[i];
+    }
+    frame16 = (uint16_t)(2 * spf);
+
+    if (rxHaveSeq != 0u)
+    {
+      uint16_t gap = (uint16_t)(seq - rxExpSeq);
+      if (gap != 0u) { cLost += gap; if (gap <= LOSS_FILL_CAP) { jb_push_silence((uint16_t)(gap * frame16)); } }
+    }
+    rxExpSeq = (uint16_t)(seq + 1u); rxHaveSeq = 1u;
+    jb_push(c2Up, outn);
+    return;
+  }
+
   if (fcodec >= (uint8_t)CODEC_COUNT) { return; }
 
   {
@@ -368,6 +518,50 @@ static void rx_drain(void)
     voice_sink(fq[t].data, fq[t].len);
     __DMB();                              /* дочитать слот до освобождения (до сдвига tail) */
     fqTail = (uint16_t)((t + 1u) & FQ_MASK);
+  }
+}
+
+/* Codec2 TX: кодирование накопленных отсчётов и отправка — в ГЛАВНОМ ЦИКЛЕ (кодек стоит десятки
+ * мс; в ISR нельзя). Пока в кольце c2Tx есть полный кадр вокодера — кодируем и шлём один SLIP-кадр
+ * {seq, WIRE_CODEC2, 8кГц, индекс режима, биты}. Только при активной передаче; режим — текущий
+ * g_c2mode (передатчик диктует, приёмник подхватывает по 5-му байту заголовка). */
+static void c2_tx_process(void)
+{
+  struct CODEC2 *c2;
+  int spf, bpf, i;
+
+  if ((g_codec != (uint8_t)WIRE_CODEC2) || (g_ptt == 0u)) { return; }
+  c2 = c2_get(c2ModeTab[g_c2mode].mode);
+  if (c2 == NULL) { return; }
+  spf = codec2_samples_per_frame(c2);
+  bpf = codec2_bytes_per_frame(c2);
+  if (spf > C2_SPF_MAX) { spf = C2_SPF_MAX; }
+
+  while (c2tx_avail() >= (uint16_t)spf)
+  {
+    uint32_t t0, d;
+    for (i = 0; i < spf; i++)
+    {
+      c2SpIn[i] = c2Tx[c2TxTail];
+      c2TxTail = (uint16_t)((c2TxTail + 1u) & C2TX_MASK);
+    }
+    t0 = DWT->CYCCNT;
+    codec2_encode(c2, c2Bits, c2SpIn);
+    d = (uint32_t)(DWT->CYCCNT - t0);
+    if (d > c2EncMaxCyc) { c2EncMaxCyc = d; } c2EncSumCyc += d; c2EncCnt++;
+
+    txPayload[0] = (uint8_t)(txSeq >> 8);
+    txPayload[1] = (uint8_t)(txSeq & 0xFFu);
+    txPayload[2] = (uint8_t)WIRE_CODEC2;
+    txPayload[3] = RATE_8K;
+    txPayload[4] = g_c2mode;
+    for (i = 0; i < bpf; i++) { txPayload[VOICE_HDR_C2 + i] = c2Bits[i]; }
+    {
+      uint16_t frameLen = (uint16_t)(VOICE_HDR_C2 + (uint16_t)bpf);
+      uint16_t e = Frame_Encode(txPayload, frameLen, txEnc, (uint16_t)sizeof(txEnc));
+      if ((e != 0u) && (UartPort_SendRaw(txEnc, e) == 0u)) { cSent++; } else { cTxDrop++; }
+    }
+    txSeq++;
   }
 }
 
@@ -438,6 +632,8 @@ static void cmd_reset(int argc, char **argv)
   UartPort_ResetRxIsrProbe();   /* диагностика B */
   fqHead = fqTail = 0u; cQover = 0u;           /* очередь кадров offload */
   loopMaxCyc = 0u; loopHavePrev = 0u;          /* probeC: период Lab_Process */
+  c2EncMaxCyc = c2EncSumCyc = c2EncCnt = 0u;   /* codec2 живой замер enc */
+  c2DecMaxCyc = c2DecSumCyc = c2DecCnt = 0u;   /* codec2 живой замер dec */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -447,7 +643,7 @@ static void cmd_voice(int argc, char **argv)
                  (unsigned long)cRec, (unsigned long)cSent, (unsigned long)cTxDrop, (unsigned long)cRecv,
                  (unsigned long)cLost, (unsigned long)cPlayed, (unsigned long)cUnder, (unsigned long)cOver);
   Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
-                 Codec_Name((codec_id_t)g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
+                 codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
                  (g_decim == DECIM_FIR) ? "fir" : "avg",
                  (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
                  (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
@@ -468,6 +664,17 @@ static void cmd_voice(int argc, char **argv)
     Console_Printf("probeC offload: qover=%lu qdepth=%u loop_max=%luus\r\n",
                    (unsigned long)cQover, (unsigned)FQ_DEPTH,
                    (unsigned long)(loopMaxCyc / (SystemCoreClock / 1000000u)));
+  }
+  /* Codec2: живой замер enc/dec в рабочем тракте (TASK п.5) — цена именно живой речи, а не синтетики. */
+  if (g_codec == (uint8_t)WIRE_CODEC2)
+  {
+    uint32_t cyc_us = SystemCoreClock / 1000000u;
+    uint32_t eMax = c2EncMaxCyc / cyc_us, eAvg = (c2EncCnt != 0u) ? ((c2EncSumCyc / c2EncCnt) / cyc_us) : 0u;
+    uint32_t dMax = c2DecMaxCyc / cyc_us, dAvg = (c2DecCnt != 0u) ? ((c2DecSumCyc / c2DecCnt) / cyc_us) : 0u;
+    Console_Printf("codec2: mode=%s frame=%ums | enc max=%luus avg=%luus (n=%lu) | dec max=%luus avg=%luus (n=%lu)\r\n",
+                   c2ModeTab[g_c2mode].name, (unsigned)c2ModeTab[g_c2mode].frameMs,
+                   (unsigned long)eMax, (unsigned long)eAvg, (unsigned long)c2EncCnt,
+                   (unsigned long)dMax, (unsigned long)dAvg, (unsigned long)c2DecCnt);
   }
 }
 static void cmd_proto(int argc, char **argv)
@@ -510,17 +717,35 @@ static void cmd_tone(int argc, char **argv)
   Console_Printf("tone = %s (%u Hz)\r\n", g_tone ? "on" : "off", (unsigned)g_toneHz);
 }
 
-/* codec [raw|ulaw|adpcm] */
+/* codec [raw|ulaw|adpcm|codec2] — четвёртый вариант, codec2, вокодер (всегда 8 кГц). */
 static void cmd_codec(int argc, char **argv)
 {
   if (argc > 1)
   {
-    if      (strcmp(argv[1], "raw")   == 0) { g_codec = (uint8_t)CODEC_RAW; }
-    else if (strcmp(argv[1], "ulaw")  == 0) { g_codec = (uint8_t)CODEC_ULAW; }
-    else if (strcmp(argv[1], "adpcm") == 0) { g_codec = (uint8_t)CODEC_ADPCM; }
-    else { Console_Write("usage: codec raw|ulaw|adpcm\r\n"); return; }
+    if      (strcmp(argv[1], "raw")    == 0) { g_codec = (uint8_t)CODEC_RAW; }
+    else if (strcmp(argv[1], "ulaw")   == 0) { g_codec = (uint8_t)CODEC_ULAW; }
+    else if (strcmp(argv[1], "adpcm")  == 0) { g_codec = (uint8_t)CODEC_ADPCM; }
+    else if (strcmp(argv[1], "codec2") == 0) { g_codec = (uint8_t)WIRE_CODEC2; g_rate = RATE_8K; }
+    else { Console_Write("usage: codec raw|ulaw|adpcm|codec2\r\n"); return; }
   }
-  Console_Printf("codec = %s\r\n", Codec_Name((codec_id_t)g_codec));
+  if (g_codec == (uint8_t)WIRE_CODEC2)
+  { Console_Printf("codec = codec2 (mode %s, 8 kHz)\r\n", c2ModeTab[g_c2mode].name); }
+  else { Console_Printf("codec = %s\r\n", Codec_Name((codec_id_t)g_codec)); }
+}
+
+/* c2mode [3200|2400|1600|1300|700C] — режим вокодера Codec2 (действует при codec=codec2). Экземпляр
+ * под новый режим создаст c2_get при следующем кодировании/декодировании (destroy+create, пул не течёт). */
+static void cmd_c2mode(int argc, char **argv)
+{
+  if (argc > 1)
+  {
+    int mi, found = -1;
+    for (mi = 0; mi < (int)C2_MODE_COUNT; mi++) { if (strcmp(argv[1], c2ModeTab[mi].name) == 0) { found = mi; } }
+    if (found < 0) { Console_Write("usage: c2mode 3200|2400|1600|1300|700C\r\n"); return; }
+    g_c2mode = (uint8_t)found;
+  }
+  Console_Printf("c2mode = %s (%lu bps, %u ms frame)\r\n", c2ModeTab[g_c2mode].name,
+                 (unsigned long)c2ModeTab[g_c2mode].bps, (unsigned)c2ModeTab[g_c2mode].frameMs);
 }
 
 /* decim [fir|avg] — метод децимации 16→8 (действует только при rate 8000):
@@ -544,6 +769,7 @@ static void cmd_rate(int argc, char **argv)
   if (argc > 1)
   {
     unsigned long r = strtoul(argv[1], NULL, 0);
+    if (g_codec == (uint8_t)WIRE_CODEC2) { Console_Write("codec2 is 8 kHz only (rate fixed)\r\n"); return; }
     if      (r == 8000ul)  { g_rate = RATE_8K; }
     else if (r == 16000ul) { g_rate = RATE_16K; }
     else { Console_Write("usage: rate 8000|16000\r\n"); return; }
@@ -556,6 +782,11 @@ static void cmd_load(int argc, char **argv)
 {
   uint32_t eus, dus, period_us;
   (void)argc; (void)argv;
+  if (g_codec == (uint8_t)WIRE_CODEC2)
+  {
+    Console_Write("load: codec2 measured live in the real path -- see 'voice' (codec2 enc/dec us)\r\n");
+    return;
+  }
   period_us = BLOCK_MS * 1000u;
   eus = (encCnt != 0u) ? ((encCyc / encCnt) / (SystemCoreClock / 1000000u)) : 0u;
   dus = (decCnt != 0u) ? ((decCyc / decCnt) / (SystemCoreClock / 1000000u)) : 0u;
@@ -607,18 +838,27 @@ static void cmd_budget(int argc, char **argv)
                      Codec_Name((codec_id_t)c), (unsigned long)bps, (unsigned long)ratio, (unsigned long)wire);
     }
   }
-  /* Ориентир: настоящий вокодер Codec2 @ 3200 бит/с (пока не реализован) — открывает
-   * дальнобойный режим, недоступный даже ADPCM. */
+  /* Codec2 (реализован): выбранный режим вокодера открывает дальнобойный эфирный режим,
+   * недоступный простым кодекам. Сжатие — относительно raw 8 кГц (128000 бит/с). */
   {
-    uint32_t wire = (3200u * 13u) / 10u;   /* = 4160 */
+    uint32_t bps   = c2ModeTab[g_c2mode].bps;
+    uint32_t wire  = (bps * 13u) / 10u;
+    uint32_t ratio = (bps != 0u) ? (128000u / bps) : 0u;
+    int done = 0;
     for (t = 0; t < 8; t++)
     {
       if (wired[t] >= wire)
       {
-        Console_Printf("codec2*    3200   x40+   %-7lu  %-7lu   %-6lu   %d dBm  [plan]\r\n",
+        Console_Printf("codec2 %-4s %6lu  x%-3lu  %-7lu  %-7lu   %-6lu   %d dBm\r\n",
+                       c2ModeTab[g_c2mode].name, (unsigned long)bps, (unsigned long)ratio,
                        (unsigned long)wire, (unsigned long)wired[t], (unsigned long)airR[t], sensR[t]);
-        break;
+        done = 1; break;
       }
+    }
+    if (done == 0)
+    {
+      Console_Printf("codec2 %-4s %6lu  x%-3lu  %-7lu  does not fit HC-12 (> 115200)\r\n",
+                     c2ModeTab[g_c2mode].name, (unsigned long)bps, (unsigned long)ratio, (unsigned long)wire);
     }
   }
 }
@@ -712,6 +952,11 @@ static void cmd_c2load(int argc, char **argv)
     for (mi = 0; mi < nml; mi++) { if (strcmp(argv[1], ml[mi].name) == 0) { only = mi; } }
     if (only < 0) { Console_Write("usage: c2load [3200|2400|1600|1300|700C]\r\n"); return; }
   }
+  /* Освободить рабочий экземпляр тракта, чтобы bump-пул стартовал с нуля (иначе замер стека/пула
+   * поплывёт: повторные create/destroy бенча при живом c2inst не сбрасывают top). Тракт пересоздаст
+   * экземпляр лениво при следующем кодировании/декодировании. */
+  c2_release();
+
   Console_Printf("c2load Codec2 8kHz, %u iter/input, worst of silence/tone/noise:\r\n", (unsigned)C2_ITERS);
   Console_Write("mode  enc_max enc_avg dec_max dec_avg frame enc%  dec%  stateRAM   ms\r\n");
   Console_Flush();
@@ -816,7 +1061,8 @@ static const console_cmd_t k_cmds[] =
   { "proto",    "framing protocol statistics (rx)",         cmd_proto    },
   { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
   { "tone",     "tone on [freq]|off (default 1 kHz)",       cmd_tone     },
-  { "codec",    "codec raw|ulaw|adpcm",                     cmd_codec    },
+  { "codec",    "codec raw|ulaw|adpcm|codec2",              cmd_codec    },
+  { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
   { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
@@ -866,6 +1112,7 @@ void Lab_Process(void)
   static uint8_t  pttRawLast = 0u;
   static uint32_t pttChangeTick = 0u;
   static uint8_t  pttBtn = 0u;
+  static uint8_t  pttPrev = 0u;
   uint32_t now = HAL_GetTick();
   uint8_t  raw;
 
@@ -885,7 +1132,22 @@ void Lab_Process(void)
   else if (((uint32_t)(now - pttChangeTick) >= 20u) && (pttBtn != raw)) { pttBtn = raw; }
   g_ptt = (uint8_t)((pttBtn != 0u) || (g_pttCmd != 0u));
 
-  rx_drain();   /* offload: разбор принятых кадров здесь, а не в приёмном ISR */
+  /* Смена PTT: сбросить накопители передачи, чтобы недособранный кусок не перетёк в следующий
+   * сеанс (TASK п.2). Фронт 0→1 — чистим 5-мс накопитель и кольцо Codec2 под запретом прерываний
+   * (стартуем с нуля). Фронт 1→0 — достаточно опустошить кольцо со стороны потребителя (ISR уже
+   * не пишет: Audio_OnCapture выходит при g_ptt==0). */
+  if ((g_ptt != 0u) && (pttPrev == 0u))
+  {
+    uint32_t prim = __get_PRIMASK();
+    __disable_irq();
+    accN = 0u; c2TxHead = 0u; c2TxTail = 0u;
+    if (prim == 0u) { __enable_irq(); }
+  }
+  else if ((g_ptt == 0u) && (pttPrev != 0u)) { c2TxTail = c2TxHead; }
+  pttPrev = g_ptt;
+
+  rx_drain();          /* offload: разбор принятых кадров здесь, а не в приёмном ISR */
+  c2_tx_process();     /* codec2: кодирование накопленных отсчётов и отправка (тоже главный цикл) */
 
   if (g_ptt != 0u) { BSP_LED_On(LED3); } else { BSP_LED_Off(LED3); }
   if (Console_IsConfigured() != 0u)
