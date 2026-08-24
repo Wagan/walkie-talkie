@@ -92,6 +92,40 @@ uint16_t UartPort_Dump(uint8_t *dst, uint16_t max);
 void UartPort_GetRxIsrProbe(uint32_t *calls, uint32_t *maxUs, uint32_t *avgUs, uint32_t *longCnt);
 void UartPort_ResetRxIsrProbe(void);
 
+/* --- Управление направлением полудуплекса (RS-485, вывод RS485_DE = PE7; DE и /RE связаны) ---
+ * Транспорт-нейтральный слой: направление поднимается ДО первого байта и опускается СТРОГО по
+ * завершению передачи (TC), защитные интервалы до/после — в мкс параметром, сторожевой таймер на
+ * удержание. Эту же точку потом займёт драйвер HC-12 (та же последовательность разворота).
+ * По умолчанию — TTL (DE не трогается, поведение прежних работ не меняется). См.
+ * docs/REPORT_rs485_direction_recon.md и docs/TASK_rs485_direction2.md. */
+typedef enum { UARTPORT_PHY_TTL = 0u, UARTPORT_PHY_RS485 = 1u } UartPort_Phy;
+
+void         UartPort_SetPhy(UartPort_Phy phy);   /* TTL (умолч.) или RS485 (включает секвенс DE) */
+UartPort_Phy UartPort_GetPhy(void);
+const char  *UartPort_PhyName(void);              /* "ttl" | "rs485" */
+/* 0 для RS-485: полудуплекс, встречная одновременная передача невозможна (нагрузочные тесты). */
+uint8_t      UartPort_PhyAllowsContention(void);
+
+void UartPort_SetRs485Guard(uint32_t preUs, uint32_t postUs); /* защитные интервалы до/после, мкс */
+void UartPort_SetRs485WdMarginUs(uint32_t marginUs);          /* запас сторожевого таймера, мкс */
+void UartPort_Rs485Poll(void);   /* опрос сторожевого таймера; звать периодически (напр. Lab_Process) */
+
+/* Счётчики направления (копия). turnaround — измеренное время удержания DE (по DWT). */
+typedef struct
+{
+  uint8_t  phyRs485;         /* 1 — активен RS-485 */
+  uint32_t preUs;            /* защитный интервал до передачи, мкс */
+  uint32_t postUs;           /* защитный интервал после передачи, мкс */
+  uint32_t wdMarginUs;       /* запас сторожевого таймера сверх времени кадра, мкс */
+  uint32_t turnaroundLastUs; /* последнее время удержания DE, мкс */
+  uint32_t turnaroundMaxUs;  /* максимум за прогон, мкс */
+  uint32_t premature;        /* опусканий DE ДО TC (должно быть 0) */
+  uint32_t watchdogTrips;    /* принудительных опусканий сторожевым таймером */
+  uint32_t errorDrops;       /* опусканий DE по ошибке передачи */
+} UartPort_Rs485Stats;
+void UartPort_GetRs485Stats(UartPort_Rs485Stats *out);
+void UartPort_ResetRs485Stats(void);
+
 /* --- Слабые хуки для лаборатории (по умолчанию пустые; переопределять при необходимости) --- */
 void UartPort_OnRxOk(void);    /* вызывается из ISR при корректно принятом пакете */
 void UartPort_OnError(void);   /* вызывается из ISR при ошибке приёмника/несходе CRC */

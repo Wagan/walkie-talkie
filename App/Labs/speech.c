@@ -691,6 +691,7 @@ static void cmd_reset(int argc, char **argv)
   c2_stats_reset();                            /* codec2 живой замер enc/dec */
   c2TxRingOver = 0u;                           /* codec2: переполнение TX-кольца */
   hrPeakPre = hrPeakPost = 0; hrClipPre = hrClipPost = 0u;   /* headroom измеритель уровня */
+  UartPort_ResetRs485Stats();                  /* RS-485: время разворота, premature, wd, ошибки */
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
@@ -1135,6 +1136,48 @@ static void cmd_c2load(int argc, char **argv)
   }
 }
 
+/* phy [ttl|rs485] — физический слой линии (по образцу decim). rs485 включает секвенс направления
+ * (RS485_DE=PE7): подъём до передачи, опускание строго по TC. Смена слоя звук не рвёт (только флаг
+ * + DE в приём). См. docs/REPORT_rs485_direction2.md. */
+static void cmd_phy(int argc, char **argv)
+{
+  if (argc > 1)
+  {
+    if      (strcmp(argv[1], "ttl")   == 0) { UartPort_SetPhy(UARTPORT_PHY_TTL); }
+    else if (strcmp(argv[1], "rs485") == 0) { UartPort_SetPhy(UARTPORT_PHY_RS485); }
+    else { Console_Write("usage: phy ttl|rs485\r\n"); return; }
+  }
+  Console_Printf("phy = %s%s\r\n", UartPort_PhyName(),
+                 (UartPort_PhyAllowsContention() == 0u) ? " (half-duplex: no simultaneous bidirectional TX)" : "");
+}
+
+/* rs485 — статистика направления + защитные интервалы/сторож. Установка:
+ *   rs485 guard <preUs> <postUs>  — защитные интервалы до/после передачи (мкс);
+ *   rs485 wd <marginUs>           — запас сторожевого таймера сверх времени кадра (мкс). */
+static void cmd_rs485(int argc, char **argv)
+{
+  UartPort_Rs485Stats s;
+  if ((argc > 1) && (strcmp(argv[1], "guard") == 0))
+  {
+    if (argc < 4) { Console_Write("usage: rs485 guard <preUs> <postUs>\r\n"); return; }
+    UartPort_SetRs485Guard((uint32_t)strtoul(argv[2], NULL, 0), (uint32_t)strtoul(argv[3], NULL, 0));
+  }
+  else if ((argc > 1) && (strcmp(argv[1], "wd") == 0))
+  {
+    if (argc < 3) { Console_Write("usage: rs485 wd <marginUs>\r\n"); return; }
+    UartPort_SetRs485WdMarginUs((uint32_t)strtoul(argv[2], NULL, 0));
+  }
+  else if (argc > 1) { Console_Write("usage: rs485 [guard <pre> <post> | wd <margin>]\r\n"); return; }
+
+  UartPort_GetRs485Stats(&s);
+  Console_Printf("rs485: phy=%s guard pre=%luus post=%luus wd_margin=%luus\r\n",
+                 UartPort_PhyName(), (unsigned long)s.preUs, (unsigned long)s.postUs,
+                 (unsigned long)s.wdMarginUs);
+  Console_Printf("rs485: turnaround last=%luus max=%luus | premature=%lu wd_trips=%lu err_drops=%lu\r\n",
+                 (unsigned long)s.turnaroundLastUs, (unsigned long)s.turnaroundMaxUs,
+                 (unsigned long)s.premature, (unsigned long)s.watchdogTrips, (unsigned long)s.errorDrops);
+}
+
 static const console_cmd_t k_cmds[] =
 {
   { "send",     "send [n] test packets",                    cmd_send     },
@@ -1156,6 +1199,8 @@ static const console_cmd_t k_cmds[] =
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
   { "load",     "codec core load (us/block, %)",            cmd_load     },
   { "c2load",   "Codec2 encode/decode load (bench, no path)", cmd_c2load },
+  { "phy",      "phy ttl|rs485 (line physical layer)",      cmd_phy      },
+  { "rs485",    "rs485 dir stats [guard/wd setters]",       cmd_rs485    },
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
@@ -1236,6 +1281,7 @@ void Lab_Process(void)
 
   rx_drain();          /* offload: разбор принятых кадров здесь, а не в приёмном ISR */
   c2_tx_process();     /* codec2: кодирование накопленных отсчётов и отправка (тоже главный цикл) */
+  UartPort_Rs485Poll();/* сторож направления RS-485: опустить DE, если передача зависла (no-op при TTL) */
 
   if (g_ptt != 0u) { BSP_LED_On(LED3); } else { BSP_LED_Off(LED3); }
   if (Console_IsConfigured() != 0u)

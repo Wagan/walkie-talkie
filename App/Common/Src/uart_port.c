@@ -20,6 +20,7 @@
 #include "uart_port.h"
 #include "frame.h"                  /* кадрирование SLIP (режим LAB03) */
 #include "stm32f4xx_hal.h"          /* HAL UART/UARTEx + HAL_GetTick */
+#include "main.h"                   /* RS485_DE_Pin / RS485_DE_GPIO_Port (генератор CubeMX, PE7) */
 #include <string.h>
 
 /* huart2 создан CubeMX в main.c (USART2, 8N1, OVER16, DMA1 Stream5 RX circular). */
@@ -132,6 +133,136 @@ static volatile uint32_t rxIsrLong   = 0u;      /* вызовов длиннее
 __attribute__((weak)) void UartPort_OnRxOk(void)   { }
 __attribute__((weak)) void UartPort_OnError(void)  { }
 __attribute__((weak)) void UartPort_OnTxDone(void) { }
+
+/* ================= УПРАВЛЕНИЕ НАПРАВЛЕНИЕМ RS-485 (TASK_rs485_direction2) =================
+ * Вывод RS485_DE (PE7, DE и /RE связаны): HIGH — передача (драйвер гонит шину, приёмник off),
+ * LOW — приём (умолчание по сбросу, плата стартует слушателем). Подъём — ДО первого байта
+ * (в старте отправки, контекст потока), опускание — СТРОГО по TC (в HAL_UART_TxCpltCallback,
+ * т.е. после того как последний стоп-бит ушёл из сдвигового регистра — см. разведку 1.3).
+ * По умолчанию физслой TTL: g_phyRs485==0, DE не трогается, поведение прежних работ (LAB02–05)
+ * не меняется. Тайминги считаются от baud (не зашиты). DWT->CYCCNT используется для мкс-задержек
+ * защитных интервалов и для замера времени разворота. */
+static volatile uint8_t  g_phyRs485    = 0u;      /* 0 — TTL (умолч.), 1 — RS-485 */
+static uint32_t          g_preUs       = 0u;      /* защитный интервал ДО передачи, мкс (умолч. 0) */
+static uint32_t          g_postUs      = 0u;      /* защитный интервал ПОСЛЕ передачи, мкс (умолч. 0) */
+static uint32_t          g_wdMarginUs  = 3000u;   /* запас сторожевого таймера сверх времени кадра */
+static volatile uint8_t  g_deUp        = 0u;      /* DE сейчас поднят (идёт передача) */
+static volatile uint32_t g_deRaiseCyc  = 0u;      /* DWT на момент подъёма DE */
+static volatile uint32_t g_deDeadlineCyc = 0u;    /* сторож: превышение → принудительное опускание */
+/* Счётчики (volatile — пишутся и из ISR (TC), и из потока (сторож/ошибка)). */
+static volatile uint32_t g_taLastUs = 0u, g_taMaxUs = 0u;
+static volatile uint32_t g_premature = 0u, g_wdTrips = 0u, g_errDrops = 0u;
+
+static uint32_t up_cyc_per_us(void) { uint32_t c = SystemCoreClock / 1000000u; return (c == 0u) ? 1u : c; }
+
+/* Короткая занятая мкс-задержка по DWT (для защитных интервалов). us==0 → мгновенно. */
+static void up_dwt_delay_us(uint32_t us)
+{
+  uint32_t start, ticks;
+  if (us == 0u) { return; }
+  start = DWT->CYCCNT;
+  ticks = us * up_cyc_per_us();
+  while ((uint32_t)(DWT->CYCCNT - start) < ticks) { }
+}
+
+/* Поднять DE под передачу nbytes байт (контекст потока, старт отправки). Считает дедлайн сторожа. */
+static void rs485_dir_tx_begin(uint16_t nbytes)
+{
+  uint32_t baud, frameUs;
+  if (g_phyRs485 == 0u) { return; }
+  up_dwt_delay_us(g_preUs);                                    /* защитный интервал ДО */
+  HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_SET);
+  g_deUp = 1u;
+  g_deRaiseCyc = DWT->CYCCNT;
+  baud    = huart2.Init.BaudRate;
+  frameUs = (baud != 0u) ? ((uint32_t)nbytes * 10u * 1000000u / baud) : 0u;  /* 8N1 = 10 бит/байт */
+  g_deDeadlineCyc = (frameUs + g_postUs + g_wdMarginUs) * up_cyc_per_us();
+}
+
+/* Опустить DE в приём. viaTc=1 — штатный путь (TC сработал): самопроверка флага TC. Замер разворота. */
+static void rs485_dir_rx(uint8_t viaTc)
+{
+  uint32_t dcyc, us;
+  if ((g_phyRs485 == 0u) || (g_deUp == 0u)) { return; }
+  if (viaTc != 0u)                                            /* строгая проверка «не рано» */
+  {
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TC) == 0u) { g_premature++; }
+  }
+  up_dwt_delay_us(g_postUs);                                  /* защитный интервал ПОСЛЕ (мал, мкс) */
+  HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
+  dcyc = (uint32_t)(DWT->CYCCNT - g_deRaiseCyc);
+  us = dcyc / up_cyc_per_us();
+  g_taLastUs = us;
+  if (us > g_taMaxUs) { g_taMaxUs = us; }
+  g_deUp = 0u;
+}
+
+/* Аварийное опускание DE (передача не стартовала/оборвалась): вернуть в приём, иначе шина занята
+ * навсегда и сосед глохнет (прямой аналог застрявшего радиопередатчика). */
+static void rs485_dir_error(void)
+{
+  if ((g_phyRs485 == 0u) || (g_deUp == 0u)) { return; }
+  HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
+  g_deUp = 0u;
+  g_errDrops++;
+}
+
+void UartPort_SetPhy(UartPort_Phy phy)
+{
+  uint32_t prim = __get_PRIMASK();
+  __disable_irq();
+  g_phyRs485 = (phy == UARTPORT_PHY_RS485) ? 1u : 0u;
+  /* Любая смена слоя — DE в приём (безопасное умолчание), состояние сброшено. */
+  HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
+  g_deUp = 0u;
+  if (prim == 0u) { __enable_irq(); }
+}
+UartPort_Phy UartPort_GetPhy(void) { return (g_phyRs485 != 0u) ? UARTPORT_PHY_RS485 : UARTPORT_PHY_TTL; }
+const char  *UartPort_PhyName(void) { return (g_phyRs485 != 0u) ? "rs485" : "ttl"; }
+uint8_t      UartPort_PhyAllowsContention(void) { return (g_phyRs485 != 0u) ? 0u : 1u; }
+
+void UartPort_SetRs485Guard(uint32_t preUs, uint32_t postUs) { g_preUs = preUs; g_postUs = postUs; }
+void UartPort_SetRs485WdMarginUs(uint32_t marginUs)          { g_wdMarginUs = marginUs; }
+
+/* Сторожевой таймер: если DE поднят дольше времени кадра + запас — принудительно опустить и
+ * сосчитать. Звать периодически из потока (Lab_Process). Критическая секция коротка (проверка +
+ * запись GPIO), чтобы не разъехаться с опусканием по TC из ISR. */
+void UartPort_Rs485Poll(void)
+{
+  uint32_t prim;
+  if (g_phyRs485 == 0u) { return; }
+  prim = __get_PRIMASK();
+  __disable_irq();
+  if ((g_deUp != 0u) && ((uint32_t)(DWT->CYCCNT - g_deRaiseCyc) > g_deDeadlineCyc))
+  {
+    uint32_t us;
+    HAL_GPIO_WritePin(RS485_DE_GPIO_Port, RS485_DE_Pin, GPIO_PIN_RESET);
+    us = (uint32_t)(DWT->CYCCNT - g_deRaiseCyc) / up_cyc_per_us();
+    g_taLastUs = us; if (us > g_taMaxUs) { g_taMaxUs = us; }
+    g_deUp = 0u;
+    g_wdTrips++;
+    txBusy = 0u;                                             /* освободить транспорт (передача зависла) */
+  }
+  if (prim == 0u) { __enable_irq(); }
+}
+
+void UartPort_GetRs485Stats(UartPort_Rs485Stats *out)
+{
+  if (out == NULL) { return; }
+  out->phyRs485         = g_phyRs485;
+  out->preUs            = g_preUs;
+  out->postUs           = g_postUs;
+  out->wdMarginUs       = g_wdMarginUs;
+  out->turnaroundLastUs = g_taLastUs;
+  out->turnaroundMaxUs  = g_taMaxUs;
+  out->premature        = g_premature;
+  out->watchdogTrips    = g_wdTrips;
+  out->errorDrops       = g_errDrops;
+}
+void UartPort_ResetRs485Stats(void)
+{
+  g_taLastUs = 0u; g_taMaxUs = 0u; g_premature = 0u; g_wdTrips = 0u; g_errDrops = 0u;
+}
 
 /* ================= CRC-16/CCITT (полином 0x1021, init 0xFFFF) ================= */
 static uint16_t crc16(const uint8_t *data, uint32_t len)
@@ -283,9 +414,11 @@ static uint8_t send_legacy(void)
 
   apply_corrupt((uint8_t *)&txpkt, PKT_SIZE);
   txBusy = 1u;
+  rs485_dir_tx_begin(PKT_SIZE);                 /* RS-485: поднять DE до первого байта */
   if (HAL_UART_Transmit_IT(&huart2, (const uint8_t *)&txpkt, PKT_SIZE) != HAL_OK)
   {
     txBusy = 0u;
+    rs485_dir_error();                          /* не стартовало — вернуть в приём */
     return 2u;
   }
   cTx++;
@@ -304,9 +437,11 @@ static uint8_t send_framed(void)
 
   apply_corrupt(g_ftxBuf, enc);
   txBusy = 1u;
+  rs485_dir_tx_begin(enc);                       /* RS-485: поднять DE до первого байта */
   if (HAL_UART_Transmit_IT(&huart2, g_ftxBuf, enc) != HAL_OK)
   {
     txBusy = 0u;
+    rs485_dir_error();
     return 2u;
   }
   cTx++;
@@ -325,12 +460,18 @@ uint8_t UartPort_SendPacket(void)
 
 uint8_t UartPort_SendByte(uint8_t b)
 {
-  /* Один байт — блокирующе (при 115200 ~87 мкс), чтобы не конфликтовать с txBusy пакетной
-   * передачи. Приём по DMA при этом продолжается (полный дуплекс). */
-  if (HAL_UART_Transmit(&huart2, &b, 1u, 100u) != HAL_OK)
+  /* Один байт — блокирующе (при 115200 ~87 мкс). HAL_UART_Transmit возвращается ТОЛЬКО после
+   * флага TC (ждёт UART_FLAG_TC, см. разведку 1.3), поэтому опускание DE после его возврата —
+   * это опускание после фактического завершения передачи, а не после «возврата из функции». */
+  HAL_StatusTypeDef st;
+  rs485_dir_tx_begin(1u);                        /* RS-485: поднять DE до передачи байта */
+  st = HAL_UART_Transmit(&huart2, &b, 1u, 100u);
+  if (st != HAL_OK)
   {
+    rs485_dir_error();                           /* таймаут/ошибка — вернуть в приём */
     return 1u;
   }
+  rs485_dir_rx(1u);                              /* TC уже установлен → строгое опускание после TC */
   bytesTx += 1u;
   return 0u;
 }
@@ -344,9 +485,11 @@ uint8_t UartPort_SendRaw(const uint8_t *buf, uint16_t len)
   if (txBusy != 0u) { return 1u; }
   for (i = 0u; i < len; i++) { g_rawTx[i] = buf[i]; }
   txBusy = 1u;
+  rs485_dir_tx_begin(len);                        /* RS-485: поднять DE до первого байта кадра речи */
   if (HAL_UART_Transmit_IT(&huart2, g_rawTx, len) != HAL_OK)
   {
     txBusy = 0u;
+    rs485_dir_error();
     return 2u;
   }
   bytesTx += len;
@@ -403,6 +546,12 @@ void UartPort_Init(void)
   g_txByteCtr = 0u;
   /* Порог диагностики B в тактах (деление один раз, не в ISR). */
   rxIsrThreshCyc = (SystemCoreClock / 1000000u) * UARTPORT_RXISR_LONG_US;
+  /* DWT->CYCCNT нужен для замера разворота RS-485 и мкс-задержек защитных интервалов; включаем
+   * без сброса счётчика (его могут использовать probeB/loopMax). Идемпотентно. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;
+  /* RS485_DE (PE7) уже настроен генератором как выход с уровнем LOW (приём) — направление
+   * начинается в приёме, физслой по умолчанию TTL (DE не трогается до UartPort_SetPhy). */
   start_rx();
 }
 
@@ -494,6 +643,7 @@ uint16_t UartPort_Dump(uint8_t *dst, uint16_t max)
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance != USART2) { return; }
+  rs485_dir_rx(1u);                 /* RS-485: опустить DE строго по TC (последний бит ушёл) */
   txBusy = 0u;
   UartPort_OnTxDone();
 }
@@ -565,6 +715,11 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   if ((ec & HAL_UART_ERROR_NE)  != 0u) { cErrNe++;  }
 
   UartPort_OnError();
+
+  /* RS-485: если ошибка застала нас на передаче (DE поднят) — вернуть линию в приём, чтобы шина
+   * не осталась занята. Обычно этот колбэк про ошибки приёмника (ORE/FE/PE/NE), но опускание DE
+   * здесь защитно и безвредно (при TTL/опущенном DE — no-op). */
+  rs485_dir_error();
 
   /* В DMA-режиме любая ошибка приёмника останавливает приём (проверено по коду HAL) —
    * перезапускаем (сбрасывая позицию разбора и сборщик). */

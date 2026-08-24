@@ -140,6 +140,13 @@ static void cmd_flood(int argc, char **argv)
 {
   unsigned long n, i;
   if (argc < 2) { Console_Write("usage: flood <n>\r\n"); return; }
+  /* Нагрузочный опыт рассчитан на встречную передачу с обеих плат. На RS-485 (полудуплекс) это
+   * физически невозможно — драйверы столкнутся. Внятно отказываем, а не роняем/вешаем линию. */
+  if (UartPort_PhyAllowsContention() == 0u)
+  {
+    Console_Write("flood: not applicable on RS-485 (half-duplex): both sides cannot transmit at once. Use 'phy ttl'.\r\n");
+    return;
+  }
   n = strtoul(argv[1], NULL, 0);
   if (n == 0ul) { n = 1ul; }
   if (n > 5000ul) { n = 5000ul; }             /* защита от зависания цикла */
@@ -191,6 +198,19 @@ static void cmd_proto(int argc, char **argv)
                  (unsigned long)p.resync, (unsigned long)p.bytesDropped);
 }
 
+/* phy [ttl|rs485] — физический слой линии. На RS-485 нагрузочный flood недоступен (полудуплекс). */
+static void cmd_phy(int argc, char **argv)
+{
+  if (argc > 1)
+  {
+    if      (strcmp(argv[1], "ttl")   == 0) { UartPort_SetPhy(UARTPORT_PHY_TTL); }
+    else if (strcmp(argv[1], "rs485") == 0) { UartPort_SetPhy(UARTPORT_PHY_RS485); }
+    else { Console_Write("usage: phy ttl|rs485\r\n"); return; }
+  }
+  Console_Printf("phy = %s%s\r\n", UartPort_PhyName(),
+                 (UartPort_PhyAllowsContention() == 0u) ? " (half-duplex: 'flood' N/A)" : "");
+}
+
 static const console_cmd_t k_cmds[] =
 {
   { "send",     "send [n] test packets (default 1)",        cmd_send     },
@@ -202,6 +222,7 @@ static const console_cmd_t k_cmds[] =
   { "baud",     "show/set UART baud on the fly",            cmd_baud     },
   { "mode",     "show/set legacy|slip framing",             cmd_mode     },
   { "flood",    "send <n> back-to-back (no pauses)",        cmd_flood    },
+  { "phy",      "phy ttl|rs485 (flood N/A on rs485)",       cmd_phy      },
   { "corrupt",  "corrupt on|off [k] every k-th tx byte",    cmd_corrupt  },
   { "proto",    "framing protocol statistics",              cmd_proto    },
 };
