@@ -60,6 +60,14 @@
 #define RATE_8K         0u
 #define RATE_16K        1u
 
+#define WIRE_CODEC2     3u                       /* id вокодера Codec2 в заголовке кадра (вне codec.c) */
+
+/* Рабочая скорость линии по умолчанию для LAB07 (field default): под HC-12 FU3 9600 (Codec2 3200).
+ * Ставится в Lab_Init через UartPort_SetBaud, чтобы плата стартовала готовой к эфиру без команд —
+ * иначе после прошивки baud берётся из .ioc (см. грабли хендоффа). Консоль (USB CDC) от этого не
+ * зависит: она на USB, линия — на USART2. Команда baud по-прежнему переопределяет на живой плате. */
+#define LINE_BAUD_DEFAULT   9600u
+
 /* Антиалиас-фильтр децимации 16→8 (см. docs/REPORT_codec2_recon.md и REPORT_aa_decim.md).
  * Старый способ (усреднение пар) — очень слабый НЧ: тон 5 кГц проходил и отражался в 3 кГц.
  * Новый — линейно-фазовый FIR-НЧ перед прореживанием 2:1. Оба доступны (команда decim). */
@@ -68,8 +76,8 @@
 #define DECIM_FIR       1u                       /* новый: FIR-НЧ ~3.6 кГц + прореживание */
 
 /* ================= НАСТРОЙКИ (по умолчанию) ================= */
-static volatile uint8_t  g_codec = (uint8_t)CODEC_ADPCM; /* кодек по умолчанию */
-static volatile uint8_t  g_rate  = RATE_16K;             /* частота по умолчанию */
+static volatile uint8_t  g_codec = WIRE_CODEC2;          /* field default: вокодер Codec2 (готов к HC-12) */
+static volatile uint8_t  g_rate  = RATE_8K;              /* field default: 8 кГц (Codec2 только 8 кГц) */
 static volatile uint8_t  g_decim = DECIM_FIR;            /* метод децимации 16→8 (по умолч. FIR) */
 static volatile uint8_t  g_ptt   = 0u;
 static volatile uint8_t  g_tone  = 0u;
@@ -226,7 +234,6 @@ static void aa_decimate(const int16_t *src16, int16_t *out8)
  * не пересекаются во времени). Смена режима → destroy старого (счётчик → 0, пул сброшен) + create
  * нового, поэтому многократная смена не исчерпывает пул. Все обращения к пулу — только из главного
  * цикла (TX-encode, RX-decode, c2load), гонок нет. */
-#define WIRE_CODEC2     3u                       /* id кодека Codec2 в заголовке кадра (вне codec.c) */
 #define VOICE_HDR_C2    (VOICE_HDR + 1u)          /* заголовок кадра Codec2: base(4) + индекс режима(1) */
 #define C2_MODE_COUNT   5u
 #define C2_SPF_MAX      320                       /* макс. отсчётов на кадр вокодера (@8кГц) */
@@ -1229,13 +1236,17 @@ uint8_t Lab_Init(void)
     return 1u;
   }
 
+  /* Field default: скорость линии 9600 (готовность к HC-12 FU3 без команд с консоли). SetBaud —
+   * DeInit/Init USART2, его MspInit сбрасывает приоритеты в (0,0); следующий Preempt их восстановит. */
+  UartPort_SetBaud(LINE_BAUD_DEFAULT);
+
   /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение. */
   Preempt_AudioOutHighest();
 
   TRACE_LOG("LAB07 speech: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1",
-            Codec_Name((codec_id_t)g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
+            codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
             (unsigned)BLOCK_MS, (unsigned long)UartPort_GetBaud());
-  Console_Write("\r\nLAB07 speech ready. 'codec', 'rate', 'budget', 'load'. Hold PA0 to talk. 'help'.\r\n");
+  Console_Write("\r\nLAB07 speech ready (field default: codec2 3200, 8 kHz, 9600). Hold PA0 to talk. 'help'.\r\n");
   return 0u;
 }
 
