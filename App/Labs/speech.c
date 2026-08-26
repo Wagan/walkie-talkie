@@ -1268,8 +1268,8 @@ uint8_t Lab_Init(void)
 
   if (Audio_Init() != 0u)
   {
-    TRACE_ERR("LAB07: audio init failed");
-    Console_Write("\r\nLAB07: AUDIO INIT FAILED\r\n");
+    TRACE_ERR("LAB%02u: audio init failed", (unsigned)LAB_ID);
+    Console_Printf("\r\nLAB%02u: AUDIO INIT FAILED\r\n", (unsigned)LAB_ID);
     return 1u;
   }
 
@@ -1280,10 +1280,11 @@ uint8_t Lab_Init(void)
   /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение. */
   Preempt_AudioOutHighest();
 
-  TRACE_LOG("LAB07 speech: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1",
+  TRACE_LOG("LAB%02u speech: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1", (unsigned)LAB_ID,
             codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
             (unsigned)BLOCK_MS, (unsigned long)UartPort_GetBaud());
-  Console_Write("\r\nLAB07 speech ready (field default: codec2 3200, 8 kHz, 9600). Hold PA0 to talk. 'help'.\r\n");
+  Console_Printf("\r\nLAB%02u speech ready (field default: codec2 3200, 8 kHz, 9600). Hold PA0 to talk. 'help'.\r\n",
+                 (unsigned)LAB_ID);
   return 0u;
 }
 
