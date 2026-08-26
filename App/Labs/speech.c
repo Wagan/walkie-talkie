@@ -52,9 +52,15 @@
 #define PAYLOAD_MAX     (VOICE_HDR + SAMP16 * 2u)/* худший случай: raw 16 кГц = 160 байт + hdr */
 #define ENC_MAX         (2u + 2u * (PAYLOAD_MAX + 2u))     /* худший SLIP */
 
-#define JB_SIZE         2048u
+#define JB_SIZE         4096u                    /* ёмкость джиттер-буфера: 256 мс @16 кГц (было 128) */
 #define JB_MASK         (JB_SIZE - 1u)
-#define JB_PREFILL      320u                     /* 20 мс @16 кГц */
+/* Prefill — порог старта воспроизведения (наполнение). Настраивается командой `prefill [ms]`.
+ * Умолчание поднято до 60 мс (field): у HC-12 задержка передачи гуляет 4–80 мс, буфер, набирающий
+ * меньше джиттера канала, работать не может. Ёмкость 256 мс поднята, т.к. HC-12 отдаёт кадры пачками:
+ * пачка ~80 мс поверх наполнения 60 мс при прежних 128 мс давала переполнение. ms→отсчёты = ×16
+ * (AUDIO_BLOCK_SAMPLES = отсчётов на 1 мс при 16 кГц). Лимит команды — не выше половины ёмкости. */
+#define JB_PREFILL_MS_DEFAULT  60u               /* умолчание prefill, мс */
+#define JB_PREFILL_MAX         (JB_SIZE / 2u)    /* максимум prefill, отсчёты (= половина ёмкости = 128 мс) */
 #define LOSS_FILL_CAP   8u
 
 #define RATE_8K         0u
@@ -79,6 +85,7 @@
 static volatile uint8_t  g_codec = WIRE_CODEC2;          /* field default: вокодер Codec2 (готов к HC-12) */
 static volatile uint8_t  g_rate  = RATE_8K;              /* field default: 8 кГц (Codec2 только 8 кГц) */
 static volatile uint8_t  g_decim = DECIM_FIR;            /* метод децимации 16→8 (по умолч. FIR) */
+static volatile uint16_t g_jbPrefill = (uint16_t)(JB_PREFILL_MS_DEFAULT * AUDIO_BLOCK_SAMPLES); /* порог старта, отсчёты (60 мс) */
 static volatile uint8_t  g_ptt   = 0u;
 static volatile uint8_t  g_tone  = 0u;
 static volatile uint16_t g_toneHz = 1000u;              /* частота тона (Гц), по умолчанию 1 кГц */
@@ -439,7 +446,7 @@ void Audio_FillPlayback(int16_t *mono, uint16_t n)
 
   if (jbPlaying == 0u)
   {
-    if (jb_fill() >= JB_PREFILL) { jbPlaying = 1u; }
+    if (jb_fill() >= g_jbPrefill) { jbPlaying = 1u; }
     else { for (i = 0u; i < n; i++) { mono[i] = 0; } return; }
   }
   if (jb_fill() >= n)
@@ -707,10 +714,11 @@ static void cmd_voice(int argc, char **argv)
   Console_Printf("voice: rec=%lu sent=%lu txdrop=%lu recv=%lu lost=%lu played=%lu under=%lu over=%lu\r\n",
                  (unsigned long)cRec, (unsigned long)cSent, (unsigned long)cTxDrop, (unsigned long)cRecv,
                  (unsigned long)cLost, (unsigned long)cPlayed, (unsigned long)cUnder, (unsigned long)cOver);
-  Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+  Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) prefill=%u ms cap=%u ms ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
                  codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
                  (g_decim == DECIM_FIR) ? "fir" : "avg",
                  (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
+                 (unsigned)(g_jbPrefill / AUDIO_BLOCK_SAMPLES), (unsigned)(JB_SIZE / AUDIO_BLOCK_SAMPLES),
                  (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
                  (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
   /* Диагностика срыва дедлайна аудио-выхода (TASK_isr_deadline_probe) — отдельными строками. */
@@ -870,6 +878,31 @@ static void cmd_rate(int argc, char **argv)
     else { Console_Write("usage: rate 8000|16000\r\n"); return; }
   }
   Console_Printf("rate = %u Hz\r\n", (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u));
+}
+
+/* prefill [ms] — порог наполнения джиттер-буфера перед стартом воспроизведения. Умолч. 60 мс.
+ * Больше prefill — устойчивее к джиттеру канала (HC-12: 4–80 мс), но выше задержка «рот→динамик».
+ * Лимит — не выше половины ёмкости буфера (JB_PREFILL_MAX = 128 мс при ёмкости 256 мс). */
+static void cmd_prefill(int argc, char **argv)
+{
+  if (argc > 1)
+  {
+    unsigned long ms = strtoul(argv[1], NULL, 0);
+    uint32_t s = (uint32_t)ms * AUDIO_BLOCK_SAMPLES;             /* мс → отсчёты (×16 @16 кГц) */
+    if (s < AUDIO_BLOCK_SAMPLES) { s = AUDIO_BLOCK_SAMPLES; }    /* минимум 1 мс */
+    if (s > JB_PREFILL_MAX)
+    {
+      Console_Printf("prefill max %u ms (half of %u ms buffer)\r\n",
+                     (unsigned)(JB_PREFILL_MAX / AUDIO_BLOCK_SAMPLES),
+                     (unsigned)(JB_SIZE / AUDIO_BLOCK_SAMPLES));
+      return;
+    }
+    g_jbPrefill = (uint16_t)s;
+  }
+  Console_Printf("prefill = %u ms (%u samples; buffer %u ms, max %u ms)\r\n",
+                 (unsigned)(g_jbPrefill / AUDIO_BLOCK_SAMPLES), (unsigned)g_jbPrefill,
+                 (unsigned)(JB_SIZE / AUDIO_BLOCK_SAMPLES),
+                 (unsigned)(JB_PREFILL_MAX / AUDIO_BLOCK_SAMPLES));
 }
 
 /* load — загрузка ядра кодеком (DWT). µs на блок и % от реального времени блока (BLOCK_MS). */
@@ -1202,6 +1235,7 @@ static const console_cmd_t k_cmds[] =
   { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
   { "headroom", "mic atten before codec (0|3|6|9|12 dB)",   cmd_headroom },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
+  { "prefill",  "prefill [ms] jitter-buffer start (def 60)", cmd_prefill },
   { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
   { "budget",   "channel budget table (HC-12)",             cmd_budget   },
   { "load",     "codec core load (us/block, %)",            cmd_load     },
