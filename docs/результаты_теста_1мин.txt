@@ -1,0 +1,61 @@
+Тест 1
+==============
+> voice
+voice: rec=270211 sent=2969 txdrop=4 recv=2978 lost=5 played=59660 under=2 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=270210 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3290 max=256us avg=69us long(>250us)=2
+probeC offload: qover=0 qdepth=16 loop_max=49759us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=399 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13115us avg=12615us (n=2973) | dec max=10949us avg=8965us (n=2978)
+==============
+> voice
+voice: rec=313026 sent=2978 txdrop=5 recv=2969 lost=4 played=59460 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=313025 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3406 max=207us avg=66us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=31980us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=178 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13121us avg=12612us (n=2983) | dec max=10852us avg=8922us (n=2969)
+==============
+Тест 2
+==============
+LAB07
+> voice
+voice: rec=222646 sent=3080 txdrop=6 recv=3052 lost=0 played=61040 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=222645 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3403 max=215us avg=68us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=35949us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=5 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13104us avg=12617us (n=3086) | dec max=11104us avg=9010us (n=3052)
+==============
+> voice
+voice: rec=343060 sent=3052 txdrop=0 recv=3080 lost=6 played=61720 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=343059 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3529 max=206us avg=66us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=39837us
+headroom: atten=6dB gainQ8=128 | pre peak=26318 nearFS=0 | post peak=13159 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13121us avg=12628us (n=3052) | dec max=10931us avg=8973us (n=3080)
+
+==============
+LAB08
+> voice
+voice: rec=181705 sent=3054 txdrop=0 recv=3024 lost=5 played=60580 under=2 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=181705 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3349 max=278us avg=69us long(>250us)=2
+probeC offload: qover=0 qdepth=16 loop_max=58205us
+headroom: atten=6dB gainQ8=128 | pre peak=12997 nearFS=0 | post peak=6499 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13121us avg=12616us (n=3054) | dec max=10927us avg=9056us (n=3024)
+================
+> voice
+voice: rec=215980 sent=3024 txdrop=5 recv=3054 lost=0 played=61080 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=215979 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3523 max=206us avg=66us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=38356us
+headroom: atten=6dB gainQ8=128 | pre peak=21784 nearFS=0 | post peak=10892 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13105us avg=12607us (n=3029) | dec max=10992us avg=8953us (n=3054)
+

@@ -21,11 +21,31 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include "console.h"   /* console_cmd_t для набора команд работы */
 
-/* Инициализация голосового тракта: BSP (LED/кнопка), DWT, консоль + регистрация команд,
- * транспорт USART2, аудио, вытеснение, стартовые умолчания (field default). Печатает шапку
- * с номером работы из LAB_ID. Возврат 0 при успехе, ненулевое при ошибке аудио. */
-uint8_t Voice_Init(void);
+/* Коды кодеков для VoiceConfig (совпадают с внутренними codec_id_t / WIRE_CODEC2). */
+#define VOICE_CODEC_RAW     0u
+#define VOICE_CODEC_ULAW    1u
+#define VOICE_CODEC_ADPCM   2u
+#define VOICE_CODEC_CODEC2  3u
+
+/* Стартовые умолчания работы (провод LAB07 vs эфир LAB08). */
+typedef struct
+{
+  uint8_t  codec;   /* VOICE_CODEC_* */
+  uint8_t  rate8k;  /* 1 = 8 кГц, 0 = 16 кГц (при codec == CODEC2 всегда 8 кГц) */
+  uint8_t  c2mode;  /* индекс режима Codec2 (0 = 3200) */
+  uint32_t baud;    /* стартовая скорость линии, бод */
+} VoiceConfig;
+
+/* Curated-наборы команд по работам (обработчики — в движке). Адаптер берёт свой. */
+const console_cmd_t *Voice_CmdsLab07(uint16_t *count);  /* провод: лесенка + отладка */
+const console_cmd_t *Voice_CmdsLab08(uint16_t *count);  /* радио: узкий полевой набор */
+
+/* Инициализация голосового тракта: BSP (LED/кнопка), DWT, консоль + регистрация cmds, транспорт
+ * USART2, аудио, вытеснение, стартовые умолчания из cfg (кодек/частота/режим/скорость). Печатает
+ * шапку с номером работы из LAB_ID. Возврат 0 при успехе, ненулевое при ошибке аудио. */
+uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t ncmds);
 
 /* Обслуживание в основном цикле: разбор принятых кадров (offload), кодирование/отправка Codec2,
  * сторож RS-485, антидребезг PTT, индикация. Вызывать в while(1) через Lab_Process работы. */

@@ -1222,7 +1222,13 @@ static void cmd_rs485(int argc, char **argv)
                  (unsigned long)s.premature, (unsigned long)s.watchdogTrips, (unsigned long)s.errorDrops);
 }
 
-static const console_cmd_t k_cmds[] =
+/* ================= НАБОРЫ КОМАНД ПО РАБОТАМ (этап 2 разделения) =================
+ * Обработчики общие (движок), а curated-наборы — по работе. Обе таблицы компилируются в обеих
+ * конфигурациях (voice.c общий), адаптер выбирает свою геттером Voice_CmdsLabNN. Так все обработчики
+ * ссылаемы (нет unused-warning), а на консоли у каждой работы — только её команды. */
+
+/* LAB07 «сжатие на проводе»: полная лесенка кодеков + отладочные инструменты (вкл. RS-485 стенд). */
+static const console_cmd_t k_cmds_lab07[] =
 {
   { "send",     "send [n] test packets",                    cmd_send     },
   { "sendbyte", "send one raw byte",                        cmd_sendbyte },
@@ -1236,24 +1242,56 @@ static const console_cmd_t k_cmds[] =
   { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
   { "tone",     "tone on [freq]|off (default 1 kHz)",       cmd_tone     },
   { "codec",    "codec raw|ulaw|adpcm|codec2",              cmd_codec    },
-  { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
-  { "headroom", "mic atten before codec (0|3|6|9|12 dB)",   cmd_headroom },
   { "rate",     "rate 8000|16000",                          cmd_rate     },
-  { "prefill",  "prefill [ms] jitter-buffer start (def 60)", cmd_prefill },
   { "decim",    "decim fir|avg (16->8 anti-alias)",         cmd_decim    },
-  { "budget",   "channel budget table (HC-12)",             cmd_budget   },
+  { "headroom", "mic atten before codec (0|3|6|9|12 dB)",   cmd_headroom },
   { "load",     "codec core load (us/block, %)",            cmd_load     },
+  { "budget",   "channel budget table (HC-12)",             cmd_budget   },
   { "c2load",   "Codec2 encode/decode load (bench, no path)", cmd_c2load },
   { "phy",      "phy ttl|rs485 (line physical layer)",      cmd_phy      },
   { "rs485",    "rs485 dir stats [guard/wd setters]",       cmd_rs485    },
 };
 
-/* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
-uint8_t Voice_Init(void)
+/* LAB08 «речь по радио»: узкий полевой набор (вокодер + канал), без отладочно-проводных команд. */
+static const console_cmd_t k_cmds_lab08[] =
+{
+  { "reset",    "reset all counters",                       cmd_reset    },
+  { "codec",    "codec raw|ulaw|adpcm|codec2",              cmd_codec    },
+  { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
+  { "prefill",  "prefill [ms] jitter-buffer start (def 60)", cmd_prefill },
+  { "budget",   "channel budget table (HC-12)",             cmd_budget   },
+  { "voice",    "voice path stats + rx line errors",        cmd_voice    },
+  { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
+  { "stat",     "link byte/error statistics",               cmd_stat     },
+};
+
+const console_cmd_t *Voice_CmdsLab07(uint16_t *count)
+{
+  if (count != NULL) { *count = (uint16_t)(sizeof(k_cmds_lab07) / sizeof(k_cmds_lab07[0])); }
+  return k_cmds_lab07;
+}
+const console_cmd_t *Voice_CmdsLab08(uint16_t *count)
+{
+  if (count != NULL) { *count = (uint16_t)(sizeof(k_cmds_lab08) / sizeof(k_cmds_lab08[0])); }
+  return k_cmds_lab08;
+}
+
+/* ================= ИНТЕРФЕЙС ДВИЖКА =================
+ * cfg — стартовые умолчания работы (кодек/частота/режим Codec2/скорость линии); cmds/ncmds — её
+ * набор команд. Так провод (LAB07) и эфир (LAB08) расходятся только конфигом и таблицей. */
+uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t ncmds)
 {
   BSP_LED_Init(LED3); BSP_LED_Init(LED4); BSP_LED_Init(LED5); BSP_LED_Init(LED6);
   BSP_LED_Off(LED3); BSP_LED_Off(LED4); BSP_LED_Off(LED5); BSP_LED_Off(LED6);
   BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_GPIO);
+
+  /* Стартовые умолчания работы. */
+  if (cfg != NULL)
+  {
+    g_codec  = cfg->codec;
+    g_rate   = (cfg->rate8k != 0u) ? RATE_8K : RATE_16K;
+    g_c2mode = (cfg->c2mode < (uint8_t)C2_MODE_COUNT) ? cfg->c2mode : 0u;
+  }
 
   /* Счётчик тактов ядра для замера загрузки (как в pintest). */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -1261,7 +1299,7 @@ uint8_t Voice_Init(void)
   DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 
   Console_Init();
-  Console_Register(k_cmds, (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0])));
+  Console_Register(cmds, ncmds);
 
   Frame_DecoderInit(&rxDec);
   UartPort_Init();
@@ -1274,18 +1312,19 @@ uint8_t Voice_Init(void)
     return 1u;
   }
 
-  /* Field default: скорость линии 9600 (готовность к HC-12 FU3 без команд с консоли). SetBaud —
-   * DeInit/Init USART2, его MspInit сбрасывает приоритеты в (0,0); следующий Preempt их восстановит. */
-  UartPort_SetBaud(LINE_BAUD_DEFAULT);
+  /* Стартовая скорость линии работы (обходит граблю «baud из .ioc»). SetBaud — DeInit/Init USART2,
+   * его MspInit сбрасывает приоритеты в (0,0); следующий Preempt их восстановит. */
+  UartPort_SetBaud((cfg != NULL) ? cfg->baud : 460800u);
 
   /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение. */
   Preempt_AudioOutHighest();
 
-  TRACE_LOG("LAB%02u speech: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1", (unsigned)LAB_ID,
+  TRACE_LOG("LAB%02u voice: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1", (unsigned)LAB_ID,
             codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
             (unsigned)BLOCK_MS, (unsigned long)UartPort_GetBaud());
-  Console_Printf("\r\nLAB%02u speech ready (field default: codec2 3200, 8 kHz, 9600). Hold PA0 to talk. 'help'.\r\n",
-                 (unsigned)LAB_ID);
+  Console_Printf("\r\nLAB%02u ready: codec=%s rate=%u Hz baud=%lu. Hold PA0 to talk. 'help'.\r\n",
+                 (unsigned)LAB_ID, codec_disp_name(g_codec),
+                 (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u), (unsigned long)UartPort_GetBaud());
   return 0u;
 }
 
