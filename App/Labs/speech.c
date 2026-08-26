@@ -29,7 +29,10 @@
 
 #include "lab.h"
 
-#if LAB_ID == 7
+/* Этап 0 разделения LAB07/LAB08 (TASK_lab08_split_recon): пока `speech.c` обслуживает ОБЕ работы —
+ * LAB08 ведёт себя идентично LAB07 (общий движок ещё не вынесен). На этапе 2 появится тонкий адаптер
+ * App/Labs/radio_voice.c (#if LAB_ID==8), а этот guard вернётся к `== 7`. */
+#if (LAB_ID == 7) || (LAB_ID == 8)
 
 #include "console.h"
 #include "uart_port.h"
@@ -1336,4 +1339,4 @@ void Lab_Process(void)
   else { BSP_LED_Off(LED6); }
 }
 
-#endif /* LAB_ID == 7 */
+#endif /* (LAB_ID == 7) || (LAB_ID == 8) */

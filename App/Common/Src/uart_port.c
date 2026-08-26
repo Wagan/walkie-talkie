@@ -15,7 +15,7 @@
 
 #include "lab.h"   /* LAB_ID + его проверка (единая точка правды) */
 
-#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5) || (LAB_ID == 7)
+#if (LAB_ID == 2) || (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5) || (LAB_ID == 7) || (LAB_ID == 8)
 
 #include "uart_port.h"
 #include "frame.h"                  /* кадрирование SLIP (режим LAB03) */

@@ -12,7 +12,7 @@
 
 #include "lab.h"
 
-#if (LAB_ID == 4) || (LAB_ID == 7)
+#if (LAB_ID == 4) || (LAB_ID == 7) || (LAB_ID == 8)
 
 #include "preempt.h"
 #include "stm32f4xx_hal.h"

@@ -32,7 +32,7 @@
 
 #include "lab.h"
 
-#if (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5) || (LAB_ID == 7)
+#if (LAB_ID == 3) || (LAB_ID == 4) || (LAB_ID == 5) || (LAB_ID == 7) || (LAB_ID == 8)
 
 #include "console.h"
 #include "usbd_cdc_if.h"   /* CDC_Transmit_FS + USBD_* типы/состояния (через usbd_cdc.h) */
