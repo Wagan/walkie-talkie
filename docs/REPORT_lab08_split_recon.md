@@ -67,8 +67,16 @@ decim, load, c2load, лесенка-сравнение; ~Р: prefill, phy/rs485,
 | `codec.c` (raw/ulaw/adpcm) | **(7) только** | да | никто (LAB04 — сырой PCM, codec.c не берёт) |
 | `preempt.c` (`Preempt_AudioOutHighest`) | (4,7) | **да, критично** | LAB04 |
 | `console.c` (USB CDC, реестр команд) | (3,4,5,7) | да | LAB03/04/05 |
+| **`USB_DEVICE/App/usbd_cdc_if.c`** (ПРИЁМ USB CDC, USER CODE) | **(3,4,5,7)** | **да, критично** | LAB03/04/05 — генерируемый файл! |
 | `bsp_audio_clock.c` | без guard (всегда) | — | все аудио-работы |
 | `trace_swo.c` | без guard (всегда) | — | все |
+
+> ⚠️ **Дополнено по факту этапа 0 (регресс).** Guard приёма консоли `usbd_cdc_if.c` (два места:
+> include `console.h` и вызов `Console_RxFromISR` в `CDC_Receive_FS`, оба в блоках USER CODE) был
+> **пропущен** при первичной разведке — это **генерируемый** файл в `USB_DEVICE/`, а не `App/Common`.
+> В LAB08 без `+8` ВЫВОД работал, а ВВОД — нет (печать и приём идут разными путями). Это ровно то
+> «место, которое всплывёт по одному на каждом этапе». **Для любой новой консольной работы правится
+> guard И в `console.c`, И в `usbd_cdc_if.c` (USER CODE).** Исправлено (коммит фикса этапа 0).
 
 - **Только в `speech.c` живёт** весь голосовой ДВИЖОК (codecs-обвязка, децимация, Codec2, джиттер,
   headroom, PTT, offload) — в Common его НЕТ; `codec.c` в Common содержит лишь три волновых кодека
