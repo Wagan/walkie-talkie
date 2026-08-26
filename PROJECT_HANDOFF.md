@@ -1,14 +1,20 @@
 # PROJECT_HANDOFF — walkie-talkie
 
 Документ для безопасного возобновления работы в НОВОЙ сессии/чате (и при смене рабочего
-чата). Дата: **2026-08-26**. Ветка `main`, последний коммит **`00078c1`** (LAB08 этап 0: фикс
-регресса приёма консоли), удалённый `git@github.com:Wagan/walkie-talkie.git`.
+чата). Дата: **2026-08-26**. Ветка `main`, последний коммит **`e81d2a4`** (LAB08 этап 1: голосовой
+движок вынесен в `App/Common/voice.{h,c}`), удалённый `git@github.com:Wagan/walkie-talkie.git`.
 > **Разделение LAB07/LAB08 идёт поэтапно** (`REPORT_lab08_split_recon.md`, план 4 этапов; после
-> КАЖДОГО — сборка всех конфигов + STOP на проверку железом). **Сделан этап 0** (конфиг LAB08 в
-> `.cproject` `ce973fb`; guards +8; `speech.c` под `#if (LAB_ID==7)||(8)` — LAB08 идентичен LAB07).
-> ⚠️ **Регресс этапа 0 (пойман на железе, исправлен `00078c1`):** для новой работы guard правится не
-> только в `App/Common`, но и в **`USB_DEVICE/App/usbd_cdc_if.c`** (приём USB CDC, USER CODE — иначе
-> вывод есть, а ВВОД нет), а имя работы в шапке брать из `LAB_ID` (`"LAB%02u"`), не литералом.
+> КАЖДОГО — сборка всех конфигов + STOP на проверку железом). **Сделаны этапы 0 и 1.** Этап 0: конфиг
+> LAB08 (`ce973fb`), guards +8, регресс приёма консоли исправлен (`00078c1`). **Этап 1 (`e81d2a4`):
+> весь речевой тракт вынесен из `speech.c` в общий движок `App/Common/voice.{h,c}` (`Voice_Init`/
+> `Voice_Process`), БЕЗ изменения поведения (bss/data elf идентичны); `speech.c` — тонкий адаптер,
+> обслуживает обе работы. **Дальше этап 2:** отдельный адаптер LAB08 `App/Labs/radio_voice.c`
+> (`#if LAB_ID==8`), `speech.c` guard вернётся к `==7`. **Этап 3:** развести умолчания (LAB07 провод
+> raw/16к/921600 + лесенка/decim/headroom/load/budget; LAB08 эфир Codec2/8к/9600/ttl +
+> codec/c2mode/prefill/budget/voice/ptt/stat) и наборы команд.
+> ⚠️ **Урок этапа 0:** для новой консольной работы guard правится не только в `App/Common`, но и в
+> **`USB_DEVICE/App/usbd_cdc_if.c`** (приём USB CDC, USER CODE — иначе вывод есть, а ВВОД нет); имя
+> работы в шапке — из `LAB_ID` (`"LAB%02u"`), не литералом.
 > Дальше: этап 1 — вынос движка в `App/Common/voice.{h,c}`, LAB07 не меняется. Решения владельца:
 > движок одним модулем; LAB07 сохраняет лесенку/decim/headroom/load/budget с провод-умолчаниями
 > (raw/16к/921600); LAB08 — codec/c2mode/prefill/budget/voice/ptt/stat с эфир-умолчаниями
@@ -68,6 +74,9 @@
   - `Inc/trace_swo.h`, `Src/trace_swo.c` — вывод в SWO/ITM + `__io_putchar` (printf→SWO).
   - `Inc/trace_log.h` — `TRACE_LOG`/`TRACE_ERR` (уровни [I]/[E] поверх printf).
   - `Src/bsp_audio_clock.c` — сильные перекрытия `BSP_AUDIO_IN/OUT_ClockConfig` (единый PLLI2S).
+  - **`Inc/voice.h`, `Src/voice.c` — общий голосовой ДВИЖОК** (речевой тракт: кодеки, децимация,
+    headroom, джиттер, Codec2, PTT, offload, probe C, команды); `Voice_Init`/`Voice_Process`; guard
+    `#if (LAB_ID==7)||(8)`. Работы LAB07/LAB08 — тонкие адаптеры поверх него (этап 1 разделения).
 - **`App/Labs/`** — по файлу на работу, весь файл обёрнут `#if LAB_ID == <n>`, реализует
   `Lab_Init`/`Lab_Process`:
   - `stand_check.c` — LAB00 (проверка стенда: микрофон→кодек, 16 кГц, + heartbeat/статус SWO).
@@ -75,7 +84,8 @@
   - `framing.c` — LAB03 (кадрирование SLIP + CRC-16, синхронизация, потери).
   - `voice_wire.c` — LAB04 (речь по проводу: PCM, PTT на PA0, полудуплекс, джиттер-буфер).
   - `usb_console.c` — LAB05 (USB Device CDC, консольное меню; команды regs/pintest).
-  - `speech.c` — LAB07 (сжатие речи: raw/µ-law/ADPCM, 8/16 кГц, антиалиас FIR, budget/load).
+  - `speech.c` — LAB07 (сжатие речи) — **тонкий адаптер над `App/Common/voice.c`** (этап 1; пока
+    обслуживает и LAB08, guard `#if (LAB_ID==7)||(8)`; на этапе 2 отделится `radio_voice.c` для LAB08).
 - Общий транспорт вынесен в **`App/Common/uart_port.{h,c}`** (USART2, кольцевой DMA RX +
   IDLE, кадрирование), консоль — **`App/Common/console.{h,c}`**, кодеки — `codec.{h,c}`,
   аудио — `audio.{h,c}`, кадры SLIP — `frame.{h,c}`. Работы-адаптеры тонкие поверх них.
