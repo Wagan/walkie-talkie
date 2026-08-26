@@ -1,17 +1,17 @@
 # PROJECT_HANDOFF — walkie-talkie
 
 Документ для безопасного возобновления работы в НОВОЙ сессии/чате (и при смене рабочего
-чата). Дата: **2026-08-26**. Ветка `main`, последний коммит **`e81d2a4`** (LAB08 этап 1: голосовой
-движок вынесен в `App/Common/voice.{h,c}`), удалённый `git@github.com:Wagan/walkie-talkie.git`.
-> **Разделение LAB07/LAB08 идёт поэтапно** (`REPORT_lab08_split_recon.md`, план 4 этапов; после
-> КАЖДОГО — сборка всех конфигов + STOP на проверку железом). **Сделаны этапы 0 и 1.** Этап 0: конфиг
-> LAB08 (`ce973fb`), guards +8, регресс приёма консоли исправлен (`00078c1`). **Этап 1 (`e81d2a4`):
-> весь речевой тракт вынесен из `speech.c` в общий движок `App/Common/voice.{h,c}` (`Voice_Init`/
-> `Voice_Process`), БЕЗ изменения поведения (bss/data elf идентичны); `speech.c` — тонкий адаптер,
-> обслуживает обе работы. **Дальше этап 2:** отдельный адаптер LAB08 `App/Labs/radio_voice.c`
-> (`#if LAB_ID==8`), `speech.c` guard вернётся к `==7`. **Этап 3:** развести умолчания (LAB07 провод
-> raw/16к/921600 + лесенка/decim/headroom/load/budget; LAB08 эфир Codec2/8к/9600/ttl +
-> codec/c2mode/prefill/budget/voice/ptt/stat) и наборы команд.
+чата). Дата: **2026-08-26**. Ветка `main`, последний коммит **`59aa6a4`** (LAB08 этап 2: раздельные
+адаптеры LAB07/LAB08), удалённый `git@github.com:Wagan/walkie-talkie.git`.
+> **Разделение LAB07/LAB08 (`REPORT_lab08_split_recon.md` + `_etap2.md`).** **Сделаны этапы 0–2.**
+> Этап 0: конфиг LAB08 (`ce973fb`), guards +8, регресс приёма консоли (`00078c1`). Этап 1 (`e81d2a4`):
+> движок вынесен в `App/Common/voice.{h,c}` (`Voice_Init(cfg,cmds,ncmds)`/`Voice_Process`). **Этап 2
+> (`59aa6a4`): раздельные тонкие адаптеры** — `App/Labs/speech.c` (LAB07, `#if LAB_ID==7`, провод
+> **raw/16к/921600** + лесенка/decim/headroom/load/budget/c2load/phy/rs485) и НОВЫЙ
+> `App/Labs/radio_voice.c` (LAB08, `#if LAB_ID==8`, эфир **Codec2 3200/8к/9600/ttl** + узкий набор
+> reset/codec/c2mode/prefill/budget/voice/ptt/stat). Конфигурации впервые расходятся намеренно —
+> ожидаемые различия vs регресс в `REPORT_lab08_split_etap2.md`; эталон LAB08 — `docs/результаты_
+> теста_1мин.txt`. Разделение по сути завершено (этап 3 «чистка» опционален).
 > ⚠️ **Урок этапа 0:** для новой консольной работы guard правится не только в `App/Common`, но и в
 > **`USB_DEVICE/App/usbd_cdc_if.c`** (приём USB CDC, USER CODE — иначе вывод есть, а ВВОД нет); имя
 > работы в шапке — из `LAB_ID` (`"LAB%02u"`), не литералом.
@@ -84,8 +84,10 @@
   - `framing.c` — LAB03 (кадрирование SLIP + CRC-16, синхронизация, потери).
   - `voice_wire.c` — LAB04 (речь по проводу: PCM, PTT на PA0, полудуплекс, джиттер-буфер).
   - `usb_console.c` — LAB05 (USB Device CDC, консольное меню; команды regs/pintest).
-  - `speech.c` — LAB07 (сжатие речи) — **тонкий адаптер над `App/Common/voice.c`** (этап 1; пока
-    обслуживает и LAB08, guard `#if (LAB_ID==7)||(8)`; на этапе 2 отделится `radio_voice.c` для LAB08).
+  - `speech.c` — LAB07 (сжатие на проводе) — **тонкий адаптер над `App/Common/voice.c`** (`#if
+    LAB_ID==7`): конфиг провода raw/16к/921600 + лесенка команд.
+  - `radio_voice.c` — LAB08 (речь по радио, HC-12) — **тонкий адаптер над `voice.c`** (`#if
+    LAB_ID==8`): конфиг эфира Codec2/8к/9600/ttl + узкий полевой набор команд.
 - Общий транспорт вынесен в **`App/Common/uart_port.{h,c}`** (USART2, кольцевой DMA RX +
   IDLE, кадрирование), консоль — **`App/Common/console.{h,c}`**, кодеки — `codec.{h,c}`,
   аудио — `audio.{h,c}`, кадры SLIP — `frame.{h,c}`. Работы-адаптеры тонкие поверх них.
@@ -144,7 +146,7 @@
 | LAB05 | 5 | USB Device CDC, консольное меню | ✅ железо `App/Labs/usb_console.c` |
 | LAB06 | 6 | Расчёт границы канала (без железа) | ✅ реализован в `budget` (LAB07) |
 | LAB07 | 7 | Сжатие речи (raw/µ-law/ADPCM + вокодер Codec2, 8/16 кГц) | ✅ железо, вкл. Codec2 (речь идёт, 3200/2400/1600/1300/700C) — `App/Labs/speech.c` |
-| LAB08 | 8 | Первый радиоканал (HC-12, 433 МГц) | 🔨 речь по радио идёт (50 м); **разделение LAB07/LAB08 в работе, этап 0** — конфиг LAB08 заведён, `speech.c` обслуживает обе (`REPORT_lab08_split_recon.md`) |
+| LAB08 | 8 | Первый радиоканал (HC-12, 433 МГц) | ✅ речь по радио идёт (50 м); **разделён от LAB07 (этап 2)** — `App/Labs/radio_voice.c` над общим движком `voice.c`, эфир-умолчания Codec2/8к/9600/ttl, узкий набор команд |
 | LAB09 | 9 | Второй радиоканал (nRF24L01+ по SPI4) | 🕒 |
 | LAB10 | 10 | Сравнение каналов | 🕒 |
 
@@ -313,18 +315,19 @@ LAB02 консоли нет** — взаимодействие только по
   параметра** (в отличие от LAB07).
 - **LAB05** (`usb_console.c:219`): `send [n]`, `sendbyte`, `stat`, `reset`, `dump`, `baud`,
   `regs`, `pintest` (дрыгать `PA[n]` ~1 кГц/5 с осциллографом, по умолч. PA2).
-- **LAB07** (таблица `k_cmds[]` в `speech.c`): `send`, `sendbyte`, `stat`, `reset`, `dump`, `regs`,
-  `baud`, `voice`, `proto`, `ptt on|off`, **`tone on [freq]|off`** (частота ЗАДАЁТСЯ, по умолч.
-  1 кГц — напр. `tone on 5000`), `codec raw|ulaw|adpcm|codec2`, **`c2mode 3200|2400|1600|1300|700C`**
-  (режим вокодера, старт 3200), **`headroom 0|3|6|9|12`** (аттенюация мик-PCM до кодека, дБ; запас
-  по уровню против перегрузки на громкой речи; измеритель pre/post — в `voice`; дефолт −6 дБ
-  провизорный), `rate 8000|16000` (при codec2 — только 8 кГц), **`prefill [ms]`** (порог старта
-  джиттер-буфера, умолч. 60 мс; лимит — половина ёмкости 256 мс = 128 мс; печатается в `voice`),
-  `decim fir|avg`,
-  `budget` (граница канала HC-12), `load` (загрузка ядра legacy-кодеком; для codec2 — см. `voice`),
-  `c2load [mode]` (синтетический бенч Codec2, в тракт не подключён), **`phy ttl|rs485`** (физслой
-  линии; rs485 включает секвенс направления DE=PE7), **`rs485`** (статистика разворота +
-  `rs485 guard <pre> <post>` / `rs485 wd <margin>` — защитные интервалы/сторож в мкс).
+  Общий движок и обработчики команд обеих работ — в `App/Common/voice.c`; наборы команд curated по
+  работе (геттеры `Voice_CmdsLab07/Lab08`).
+- **LAB07** «сжатие на проводе» (адаптер `speech.c`, набор `k_cmds_lab07`, **умолч. raw / 16 кГц /
+  921600**): `send`, `sendbyte`, `stat`, `reset`, `dump`, `regs`, `baud`, `voice`, `proto`,
+  `ptt on|off`, **`tone on [freq]|off`** (частота ЗАДАЁТСЯ), `codec raw|ulaw|adpcm|codec2`,
+  `rate 8000|16000`, `decim fir|avg`, **`headroom 0|3|6|9|12`**, `load`, `budget`,
+  `c2load [mode]`, **`phy ttl|rs485`** + **`rs485`** (RS-485 отладочный стенд, `rs485 guard`/`wd`).
+  ⚠️ **c2mode/prefill в LAB07 НЕТ** (Codec2 фикс. 3200, prefill фикс. 60) — они в LAB08.
+- **LAB08** «речь по радио» (адаптер `radio_voice.c`, набор `k_cmds_lab08` — **узкий**, **умолч.
+  Codec2 3200 / 8 кГц / 9600 / ttl**): `reset`, `codec raw|ulaw|adpcm|codec2`,
+  **`c2mode 3200|2400|1600|1300|700C`**, **`prefill [ms]`** (порог джиттер-буфера, умолч. 60 мс,
+  лимит 128 мс), `budget`, `voice`, `ptt on|off`, `stat`. Прочих (send/dump/regs/baud/tone/decim/
+  headroom/load/c2load/phy/rs485) **нет** — узкий полевой набор.
 
 ## 11. Счётчики probe A/B/C (LAB07, печатает `voice`; обнуляет `reset`)
 
