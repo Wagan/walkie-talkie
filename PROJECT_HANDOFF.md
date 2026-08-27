@@ -1,8 +1,8 @@
 # PROJECT_HANDOFF — walkie-talkie
 
 Документ для безопасного возобновления работы в НОВОЙ сессии/чате (и при смене рабочего
-чата). Дата: **2026-08-26**. Ветка `main`, последний коммит **`59aa6a4`** (LAB08 этап 2: раздельные
-адаптеры LAB07/LAB08), удалённый `git@github.com:Wagan/walkie-talkie.git`.
+чата). Дата: **2026-08-27**. Ветка `main`, последний коммит **`3c52add`** (LAB08 этап 2: наборы
+команд добиты — LAB08 +baud, LAB07 +c2mode), удалённый `git@github.com:Wagan/walkie-talkie.git`.
 > **Разделение LAB07/LAB08 (`REPORT_lab08_split_recon.md` + `_etap2.md`).** **Сделаны этапы 0–2.**
 > Этап 0: конфиг LAB08 (`ce973fb`), guards +8, регресс приёма консоли (`00078c1`). Этап 1 (`e81d2a4`):
 > движок вынесен в `App/Common/voice.{h,c}` (`Voice_Init(cfg,cmds,ncmds)`/`Voice_Process`). **Этап 2
