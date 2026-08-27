@@ -320,14 +320,16 @@ LAB02 консоли нет** — взаимодействие только по
 - **LAB07** «сжатие на проводе» (адаптер `speech.c`, набор `k_cmds_lab07`, **умолч. raw / 16 кГц /
   921600**): `send`, `sendbyte`, `stat`, `reset`, `dump`, `regs`, `baud`, `voice`, `proto`,
   `ptt on|off`, **`tone on [freq]|off`** (частота ЗАДАЁТСЯ), `codec raw|ulaw|adpcm|codec2`,
+  **`c2mode 3200|2400|1600|1300|700C`** (все пять режимов вокодера — на проводе канал не ограничивает),
   `rate 8000|16000`, `decim fir|avg`, **`headroom 0|3|6|9|12`**, `load`, `budget`,
   `c2load [mode]`, **`phy ttl|rs485`** + **`rs485`** (RS-485 отладочный стенд, `rs485 guard`/`wd`).
-  ⚠️ **c2mode/prefill в LAB07 НЕТ** (Codec2 фикс. 3200, prefill фикс. 60) — они в LAB08.
+  ⚠️ **prefill в LAB07 НЕТ** (фикс. 60 мс) — он в LAB08.
 - **LAB08** «речь по радио» (адаптер `radio_voice.c`, набор `k_cmds_lab08` — **узкий**, **умолч.
   Codec2 3200 / 8 кГц / 9600 / ttl**): `reset`, `codec raw|ulaw|adpcm|codec2`,
-  **`c2mode 3200|2400|1600|1300|700C`**, **`prefill [ms]`** (порог джиттер-буфера, умолч. 60 мс,
-  лимит 128 мс), `budget`, `voice`, `ptt on|off`, `stat`. Прочих (send/dump/regs/baud/tone/decim/
-  headroom/load/c2load/phy/rs485) **нет** — узкий полевой набор.
+  **`c2mode 3200|2400|1600|1300|700C`**, **`baud`** (проводная скорость HC-12 — нужна для перехода на
+  1300/700C → 4800, иначе выигрыш по дальности не получить), **`prefill [ms]`** (умолч. 60 мс, лимит
+  128 мс), `budget`, `voice`, `ptt on|off`, `stat`. Прочих (send/dump/regs/tone/decim/headroom/load/
+  c2load/phy/rs485) **нет** — узкий полевой набор.
 
 ## 11. Счётчики probe A/B/C (LAB07, печатает `voice`; обнуляет `reset`)
 
