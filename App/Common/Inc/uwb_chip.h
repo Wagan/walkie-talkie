@@ -24,6 +24,7 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>   /* NULL */
 #include "uwb_config.h"
+#include "console.h"  /* console_cmd_t */
 
 /* Общие константы (одинаковы у обоих поколений). */
 #define UWB_REG_DEV_ID   0x00u        /* адрес регистра идентификатора устройства */
@@ -52,6 +53,13 @@ const char *UwbChip_SpiCeilingNote(void);
  * в *out, если получено драйвером; 0 если драйвера нет (тогда общий движок читает напрямую).
  * У DW3000 — через Qorvo dwt_uwb_driver (платформенный слой dw3000_port); у DW1000 — нет. */
 uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out);
+
+/* Дополнительные команды семейства (радио и т.п.) поверх базовых uwb_core. Возврат таблицы и
+ * количества в *count; NULL/0 если у семейства их нет. У DW3000 — uwbinit/uwbcfg/uwbtx/uwbrx/uwbstat. */
+const console_cmd_t *UwbChip_ExtraCmds(uint16_t *count);
+
+/* Периодический опрос семейства из Lab_Process (напр. приём кадра без прерывания). У DW1000 — пусто. */
+void UwbChip_Poll(void);
 
 #ifdef __cplusplus
 }

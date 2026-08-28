@@ -76,6 +76,16 @@ uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out)
   return Dw3000Port_ReadDevId(out);
 }
 
+const console_cmd_t *UwbChip_ExtraCmds(uint16_t *count)
+{
+  return Dw3000Port_Cmds(count);        /* uwbinit/uwbcfg/uwbtx/uwbrx/uwbstat */
+}
+
+void UwbChip_Poll(void)
+{
+  Dw3000Port_Poll();                    /* опрос приёма кадра */
+}
+
 #endif /* UWB_CHIP_DW3000 */
 
 #endif /* LAB_ID == 9 */

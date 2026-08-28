@@ -65,6 +65,18 @@ uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out)
   return 0u;
 }
 
+const console_cmd_t *UwbChip_ExtraCmds(uint16_t *count)
+{
+  /* У DW1000 радио-команд на этом этапе нет. */
+  if (count != NULL) { *count = 0u; }
+  return NULL;
+}
+
+void UwbChip_Poll(void)
+{
+  /* Для DW1000 периодического опроса нет. */
+}
+
 #endif /* UWB_CHIP_DW1000 */
 
 #endif /* LAB_ID == 9 */

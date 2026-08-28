@@ -241,7 +241,21 @@ uint8_t Lab_Init(void)
   st = HAL_SPI_Init(&hspi4);
 
   Console_Init();
-  Console_Register(k_cmds, (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0])));
+
+  /* Базовые команды движка + дополнительные команды семейства (радио у DW3000). Объединяем в одну
+   * таблицу, т.к. Console_Register хранит единственный указатель. */
+  {
+    static console_cmd_t all[16];
+    uint16_t base = (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0]));
+    uint16_t exN = 0u;
+    const console_cmd_t *ex = UwbChip_ExtraCmds(&exN);
+    uint16_t total = 0u;
+    uint16_t i;
+
+    for (i = 0u; (i < base) && (total < 16u); i++) { all[total++] = k_cmds[i]; }
+    for (i = 0u; (ex != NULL) && (i < exN) && (total < 16u); i++) { all[total++] = ex[i]; }
+    Console_Register(all, total);
+  }
 
   if (st != HAL_OK)
   {
@@ -271,6 +285,9 @@ void Lab_Process(void)
 
   /* Разбор команд консоли + выталкивание вывода в USB. */
   Console_Process();
+
+  /* Опрос семейства (у DW3000 — приём кадра без прерывания; у DW1000 — пусто). */
+  UwbChip_Poll();
 
   /* Индикация USB: порт открыт хостом -> LED4 мигает ~2 Гц; иначе выключен. */
   if (Console_IsConfigured() != 0u)

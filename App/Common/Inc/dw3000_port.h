@@ -21,6 +21,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include "console.h"   /* console_cmd_t */
 
 /* Инициализация платформенного слоя (счётчик циклов DWT для мкс-задержек). */
 void Dw3000Port_Init(void);
@@ -30,6 +31,10 @@ int  Dw3000Port_Probe(void);
 
 /* Прочитать DEV_ID ЧЕРЕЗ драйвер Qorvo (dwt_readdevid). 1 при успехе (probe прошёл), иначе 0. */
 uint8_t Dw3000Port_ReadDevId(uint32_t *out);
+
+/* --- Радио LAB09 (первый кадр) --- реализовано в dw3000_port.c, вызывается адаптером DW3000. */
+const console_cmd_t *Dw3000Port_Cmds(uint16_t *count);   /* набор команд uwbinit/uwbcfg/... */
+void Dw3000Port_Poll(void);                              /* опрос приёма (из Lab_Process) */
 
 #ifdef __cplusplus
 }
