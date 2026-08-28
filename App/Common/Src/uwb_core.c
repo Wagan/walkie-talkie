@@ -27,6 +27,10 @@
 #include "trace_log.h"
 #include "stm32f4xx_hal.h"
 #include "stm32f411e_discovery.h"   /* светодиоды BSP_LED_* (индикация USB) */
+#if defined(UWB_CHIP_DW3000)
+#include "voice.h"                  /* речевой движок (LAB09 шаг 6) */
+#include "dw3000_port.h"            /* радиокоманды uwbinit/... для набора LAB09 */
+#endif
 
 /* Дескриптор SPI4, созданный CubeMX в main.c. */
 extern SPI_HandleTypeDef hspi4;
@@ -225,25 +229,50 @@ static const console_cmd_t k_cmds[] =
 };
 
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
+#if defined(UWB_CHIP_DW3000)
+/* --- Путь DW3000 (шаг 6): речь по UWB через голосовой движок voice.c --- */
+uint8_t Lab_Init(void)
+{
+  static console_cmd_t all[24];
+  VoiceConfig cfg;
+  const console_cmd_t *t;
+  uint16_t total = 0u, n = 0u, i;
+
+  /* SPI4 медленно (для инициализации DW3000) + аппаратный сброс модуля до Voice_Init. */
+  hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
+  (void)HAL_SPI_Init(&hspi4);
+  uwb_hard_reset();
+
+  /* Объединённый набор LAB09: речь (voice/ptt/stat/reset/codec/c2mode/prefill) + диагностика devid
+   * + радиокоманды uwbinit/uwbcfg/uwbstat(+uwbtx/uwbrx). Console_Register хранит один указатель. */
+  t = Voice_CmdsLab09(&n);   for (i = 0u; (i < n) && (total < 24u); i++) { all[total++] = t[i]; }
+  for (i = 0u; (i < (sizeof(k_cmds) / sizeof(k_cmds[0]))) && (total < 24u); i++) { all[total++] = k_cmds[i]; }
+  t = Dw3000Port_Cmds(&n);   for (i = 0u; (t != NULL) && (i < n) && (total < 24u); i++) { all[total++] = t[i]; }
+
+  /* Умолчания эфира: Codec2 3200, 8 кГц (baud не используется под UWB). */
+  cfg.codec = VOICE_CODEC_CODEC2; cfg.rate8k = 1u; cfg.c2mode = 0u; cfg.baud = 0u;
+  return Voice_Init(&cfg, all, total);   /* console+audio+preempt+register+defaults */
+}
+
+void Lab_Process(void)
+{
+  Voice_Process();   /* приём радиокадров опросом, кодирование/передача Codec2, PTT — внутри движка */
+}
+
+#else  /* UWB_CHIP_DW1000: сохраняемый путь — проверка живости devid (шаги 4-5) */
 uint8_t Lab_Init(void)
 {
   HAL_StatusTypeDef st;
 
-  BSP_LED_Init(LED4);   /* зелёный: признак «USB сконфигурирован» */
-  BSP_LED_Init(LED5);   /* красный: ошибка */
+  BSP_LED_Init(LED4);
+  BSP_LED_Init(LED5);
   BSP_LED_Off(LED4);
   BSP_LED_Off(LED5);
 
-  /* Понизить SCK до <= 3 МГц: годится обоим поколениям (DW1000 INIT <= 3 МГц; DW3000 INIT_RC
-   * <= 7 МГц). PCLK2 = APB2 = 96 МГц, делитель 64 -> 1.5 МГц (запас на длинный жгут).
-   * Переинициализируем ТОЛЬКО экземпляр hspi4 в прикладном коде — .ioc и MX_SPI4_Init не трогаем. */
   hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
   st = HAL_SPI_Init(&hspi4);
 
   Console_Init();
-
-  /* Базовые команды движка + дополнительные команды семейства (радио у DW3000). Объединяем в одну
-   * таблицу, т.к. Console_Register хранит единственный указатель. */
   {
     static console_cmd_t all[16];
     uint16_t base = (uint16_t)(sizeof(k_cmds) / sizeof(k_cmds[0]));
@@ -251,27 +280,18 @@ uint8_t Lab_Init(void)
     const console_cmd_t *ex = UwbChip_ExtraCmds(&exN);
     uint16_t total = 0u;
     uint16_t i;
-
     for (i = 0u; (i < base) && (total < 16u); i++) { all[total++] = k_cmds[i]; }
     for (i = 0u; (ex != NULL) && (i < exN) && (total < 16u); i++) { all[total++] = ex[i]; }
     Console_Register(all, total);
   }
 
-  if (st != HAL_OK)
-  {
-    BSP_LED_On(LED5);
-    TRACE_ERR("LAB09 SPI4 reinit failed (HAL=%d)", (int)st);
-  }
-
-  /* Первичный аппаратный сброс, чтобы к первой команде модуль был в рабочем состоянии. */
+  if (st != HAL_OK) { BSP_LED_On(LED5); TRACE_ERR("LAB09 SPI4 reinit failed (HAL=%d)", (int)st); }
   uwb_hard_reset();
 
-  /* Баннер: в SWO сразу, в USB — как только хост откроет порт. Только ASCII. */
   {
     uint32_t div = 0u;
     uint32_t sck = uwb_sck_hz(&div);
-    TRACE_LOG("LAB09 UWB (%s) devid check: SPI4 SCK=%lu Hz, mode 0",
-              UwbChip_Family(), (unsigned long)sck);
+    TRACE_LOG("LAB09 UWB (%s) devid check: SPI4 SCK=%lu Hz, mode 0", UwbChip_Family(), (unsigned long)sck);
   }
   Console_Printf("\r\nLAB09 UWB (%s) devid check ready. Type 'help'.\r\n", UwbChip_Family());
   Console_Printf("Run 'devid' - expect 0x%08lX.\r\n", (unsigned long)UwbChip_DevIdExpected());
@@ -282,26 +302,14 @@ void Lab_Process(void)
 {
   static uint32_t lastBlink = 0u;
   uint32_t now = HAL_GetTick();
-
-  /* Разбор команд консоли + выталкивание вывода в USB. */
   Console_Process();
-
-  /* Опрос семейства (у DW3000 — приём кадра без прерывания; у DW1000 — пусто). */
   UwbChip_Poll();
-
-  /* Индикация USB: порт открыт хостом -> LED4 мигает ~2 Гц; иначе выключен. */
   if (Console_IsConfigured() != 0u)
   {
-    if ((uint32_t)(now - lastBlink) >= 250u)
-    {
-      lastBlink = now;
-      BSP_LED_Toggle(LED4);
-    }
+    if ((uint32_t)(now - lastBlink) >= 250u) { lastBlink = now; BSP_LED_Toggle(LED4); }
   }
-  else
-  {
-    BSP_LED_Off(LED4);
-  }
+  else { BSP_LED_Off(LED4); }
 }
+#endif /* UWB_CHIP_DW3000 */
 
 #endif /* LAB_ID == 9 */

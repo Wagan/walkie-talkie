@@ -36,6 +36,15 @@ uint8_t Dw3000Port_ReadDevId(uint32_t *out);
 const console_cmd_t *Dw3000Port_Cmds(uint16_t *count);   /* набор команд uwbinit/uwbcfg/... */
 void Dw3000Port_Poll(void);                              /* опрос приёма (из Lab_Process) */
 
+/* --- Транспорт для голосового движка (voice.c, VOICE_XPORT_UWB): «отдать кадр / принять кадр» --- */
+uint8_t Dw3000Port_IsInited(void);                       /* 1, если uwbinit прошёл */
+uint8_t Dw3000Port_VoiceTx(const uint8_t *payload, uint16_t len);  /* 0 = TXFRS подтверждён, иначе 1 */
+void Dw3000Port_VoicePoll(void (*sink)(const uint8_t *payload, uint16_t len)); /* опрос приёма -> sink */
+void Dw3000Port_VoiceRxArm(void);                        /* вернуть приёмник в приём (после передачи) */
+void Dw3000Port_GetVoiceStats(uint32_t *tx, uint32_t *rx, uint32_t *crc,
+                              uint32_t *phe, uint32_t *to, uint32_t *sw);
+void Dw3000Port_ResetVoiceStats(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -31,13 +31,24 @@
   */
 
 #include "lab.h"
+#include "uwb_config.h"   /* UWB_CHIP_DW3000: речь по UWB собирается только для пути DW3000 */
 
-#if (LAB_ID == 7) || (LAB_ID == 8)
+#if (LAB_ID == 7) || (LAB_ID == 8) || ((LAB_ID == 9) && defined(UWB_CHIP_DW3000))
+
+/* Транспорт кадров: LAB07/08 — провод (uart_port + кадрирование SLIP/CRC), LAB09 — радио UWB
+ * (готовые пакеты со своей CRC, SLIP не нужен). Разводится макросом; поведение LAB07/08 не меняется. */
+#define VOICE_XPORT_UART  ((LAB_ID == 7) || (LAB_ID == 8))
+#define VOICE_XPORT_UWB   (LAB_ID == 9)
 
 #include "voice.h"
 #include "console.h"
+#if VOICE_XPORT_UART
 #include "uart_port.h"
 #include "frame.h"
+#endif
+#if VOICE_XPORT_UWB
+#include "dw3000_port.h"
+#endif
 #include "audio.h"
 #include "codec.h"
 #include "preempt.h"
@@ -120,7 +131,9 @@ static int16_t  acc16[SAMP16];
 static uint16_t accN = 0u;
 static uint16_t txSeq = 0u;
 static uint8_t  txPayload[PAYLOAD_MAX];
-static uint8_t  txEnc[ENC_MAX];
+#if VOICE_XPORT_UART
+static uint8_t  txEnc[ENC_MAX];          /* выход SLIP-кодера — только провод */
+#endif
 
 static const int16_t toneLUT[16] =
 { 0, 3062, 5657, 7391, 8000, 7391, 5657, 3062, 0, -3062, -5657, -7391, -8000, -7391, -5657, -3062 };
@@ -140,7 +153,9 @@ static const int16_t aaCoef[AA_TAPS] =
 static int16_t aaHist[AA_TAPS - 1u];   /* хвост предыдущего блока 16 кГц (непрерывность FIR) */
 
 /* ================= ПРИЁМ / ДЖИТТЕР-БУФЕР (16 кГц) ================= */
-static Frame_Decoder     rxDec;
+#if VOICE_XPORT_UART
+static Frame_Decoder     rxDec;          /* SLIP-декодер — только проводной транспорт */
+#endif
 static uint16_t          rxExpSeq = 0u;
 static uint8_t           rxHaveSeq = 0u;
 static int16_t           jbuf[JB_SIZE];
@@ -177,7 +192,13 @@ static uint8_t           loopHavePrev = 0u;
  * чтобы никогда не усекать CRC-корректный кадр. */
 #define FQ_DEPTH   16u
 #define FQ_MASK    (FQ_DEPTH - 1u)
-typedef struct { uint16_t len; uint8_t data[FRAME_MAX_CONTENT]; } fq_item_t;
+/* Размер слота: у провода — макс. содержимое SLIP-кадра; у радио — свой предел (frame.h не тянем). */
+#if VOICE_XPORT_UART
+#define VOICE_SLOT_MAX  FRAME_MAX_CONTENT
+#else
+#define VOICE_SLOT_MAX  128u
+#endif
+typedef struct { uint16_t len; uint8_t data[VOICE_SLOT_MAX]; } fq_item_t;
 static fq_item_t         fq[FQ_DEPTH];
 static volatile uint16_t fqHead = 0u;   /* пишет только ISR-производитель */
 static volatile uint16_t fqTail = 0u;   /* пишет только потребитель (Voice_Process) */
@@ -319,10 +340,12 @@ static struct CODEC2 *c2_get(int mode)
   c2_stats_reset();   /* новый режим/экземпляр — живой замер enc/dec с чистого листа */
   return c2inst;
 }
-static void c2_release(void)
+#if VOICE_XPORT_UART
+static void c2_release(void)   /* используется только замером c2load (провод LAB07) */
 {
   if (c2inst != NULL) { codec2_destroy(c2inst); c2inst = NULL; c2instMode = -1; }
 }
+#endif
 
 /* Кольцо c2Tx: производитель (ISR). Переполнение — свой счётчик c2TxRingOver (печатается в voice),
  * НЕ сваливаем в txdrop: это разные причины (кольцо = главный цикл не успел кодировать; txdrop =
@@ -403,11 +426,15 @@ static void tx_flush(void)
   txPayload[3] = g_rate;
   frameLen = (uint16_t)(VOICE_HDR + enc);
 
+#if VOICE_XPORT_UART
   {
     uint16_t e = Frame_Encode(txPayload, frameLen, txEnc, (uint16_t)sizeof(txEnc));
     if ((e != 0u) && (UartPort_SendRaw(txEnc, e) == 0u)) { cSent++; }
     else { cTxDrop++; }
   }
+#else  /* UWB: payload напрямую в радиокадр (SLIP/CRC не нужны) */
+  if (Dw3000Port_VoiceTx(txPayload, frameLen) == 0u) { cSent++; } else { cTxDrop++; }
+#endif
   txSeq++; accN = 0u;
 }
 
@@ -479,7 +506,7 @@ static void frame_enqueue(const uint8_t *payload, uint16_t len)
   uint16_t nh = (uint16_t)((fqHead + 1u) & FQ_MASK);
   uint16_t i;
   if (nh == fqTail) { cQover++; return; }               /* очередь полна: кадр принят, класть некуда */
-  if (len > (uint16_t)FRAME_MAX_CONTENT) { len = (uint16_t)FRAME_MAX_CONTENT; }
+  if (len > (uint16_t)VOICE_SLOT_MAX) { len = (uint16_t)VOICE_SLOT_MAX; }
   fq[fqHead].len = len;
   for (i = 0u; i < len; i++) { fq[fqHead].data[i] = payload[i]; }
   __DMB();                                               /* содержимое слота видно до публикации head */
@@ -632,17 +659,24 @@ static void c2_tx_process(void)
     for (i = 0; i < bpf; i++) { txPayload[VOICE_HDR_C2 + i] = c2Bits[i]; }
     {
       uint16_t frameLen = (uint16_t)(VOICE_HDR_C2 + (uint16_t)bpf);
+#if VOICE_XPORT_UART
       uint16_t e = Frame_Encode(txPayload, frameLen, txEnc, (uint16_t)sizeof(txEnc));
       if ((e != 0u) && (UartPort_SendRaw(txEnc, e) == 0u)) { cSent++; } else { cTxDrop++; }
+#else  /* UWB */
+      if (Dw3000Port_VoiceTx(txPayload, frameLen) == 0u) { cSent++; } else { cTxDrop++; }
+#endif
     }
     txSeq++;
   }
 }
 
 /* sink в ISR — только постановка кадра в очередь (разбор перенесён в rx_drain/Voice_Process). */
+#if VOICE_XPORT_UART
 static void voice_rx_byte(uint8_t b) { Frame_DecodeByte(&rxDec, b, frame_enqueue); }
+#endif
 
 /* ================= КОМАНДЫ (база как в LAB04) ================= */
+#if VOICE_XPORT_UART   /* проводные команды (провод LAB07/08); в радио-наборе LAB09 их нет */
 static void cmd_send(int argc, char **argv)
 {
   unsigned long m = 1ul, i;
@@ -664,13 +698,30 @@ static void cmd_sendbyte(int argc, char **argv)
   if (UartPort_SendByte((uint8_t)v) == 0u) { Console_Printf("sent byte 0x%02lX\r\n", (unsigned long)v); }
   else { Console_Write("sendbyte failed\r\n"); }
 }
+#endif /* VOICE_XPORT_UART: send/sendbyte */
+
 static void cmd_stat(int argc, char **argv)
 {
-  UartPort_Stats s; (void)argc; (void)argv; UartPort_GetStats(&s);
-  Console_Printf("link: baud=%lu bytes tx=%lu rx=%lu | err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
-                 (unsigned long)UartPort_GetBaud(), (unsigned long)s.bytesTx, (unsigned long)s.bytesRx,
-                 (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
+  (void)argc; (void)argv;
+#if VOICE_XPORT_UART
+  {
+    UartPort_Stats s; UartPort_GetStats(&s);
+    Console_Printf("link: baud=%lu bytes tx=%lu rx=%lu | err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+                   (unsigned long)UartPort_GetBaud(), (unsigned long)s.bytesTx, (unsigned long)s.bytesRx,
+                   (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
+  }
+#else  /* UWB: радиолиния */
+  {
+    uint32_t tx = 0u, rx = 0u, crc = 0u, phe = 0u, to = 0u, sw = 0u;
+    Dw3000Port_GetVoiceStats(&tx, &rx, &crc, &phe, &to, &sw);
+    Console_Printf("link: UWB inited=%u tx=%lu rx=%lu | crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu\r\n",
+                   (unsigned)Dw3000Port_IsInited(), (unsigned long)tx, (unsigned long)rx,
+                   (unsigned long)crc, (unsigned long)phe, (unsigned long)to, (unsigned long)sw);
+  }
+#endif
 }
+
+#if VOICE_XPORT_UART   /* dump/regs/baud — проводные */
 static void cmd_dump(int argc, char **argv)
 {
   uint8_t buf[64]; uint16_t n, i; (void)argc; (void)argv;
@@ -695,49 +746,79 @@ static void cmd_baud(int argc, char **argv)
   Preempt_AudioOutHighest();   /* HAL_UART_MspInit при реините вернул USART2 в (0,0) — переустановить */
   Console_Printf("baud set to %lu\r\n", (unsigned long)UartPort_GetBaud());
 }
+#endif /* VOICE_XPORT_UART: dump/regs/baud */
+
 static void cmd_reset(int argc, char **argv)
 {
   (void)argc; (void)argv;
-  UartPort_ResetStats();
   cRec = cSent = cTxDrop = cRecv = cLost = cPlayed = cUnder = cOver = 0u;
   encCyc = encCnt = decCyc = decCnt = 0u;
-  rxDec.stats.framesRx = rxDec.stats.framesCrc = rxDec.stats.resync = rxDec.stats.bytesDropped = 0u;
   Audio_ResetOutProbe();        /* диагностика A: обнулить и задать базу «секунд от старта» */
-  UartPort_ResetRxIsrProbe();   /* диагностика B */
   fqHead = fqTail = 0u; cQover = 0u;           /* очередь кадров offload */
   loopMaxCyc = 0u; loopHavePrev = 0u;          /* probeC: период Voice_Process */
   c2_stats_reset();                            /* codec2 живой замер enc/dec */
   c2TxRingOver = 0u;                           /* codec2: переполнение TX-кольца */
   hrPeakPre = hrPeakPost = 0; hrClipPre = hrClipPost = 0u;   /* headroom измеритель уровня */
-  UartPort_ResetRs485Stats();                  /* RS-485: время разворота, premature, wd, ошибки */
+#if VOICE_XPORT_UART
+  UartPort_ResetStats();
+  rxDec.stats.framesRx = rxDec.stats.framesCrc = rxDec.stats.resync = rxDec.stats.bytesDropped = 0u;
+  UartPort_ResetRxIsrProbe();   /* диагностика B */
+  UartPort_ResetRs485Stats();   /* RS-485: время разворота, premature, wd, ошибки */
+#else  /* UWB: радиосчётчики */
+  Dw3000Port_ResetVoiceStats();
+#endif
   Console_Write("counters reset\r\n");
 }
 static void cmd_voice(int argc, char **argv)
 {
-  UartPort_Stats s; (void)argc; (void)argv; UartPort_GetStats(&s);
+  (void)argc; (void)argv;
   Console_Printf("voice: rec=%lu sent=%lu txdrop=%lu recv=%lu lost=%lu played=%lu under=%lu over=%lu\r\n",
                  (unsigned long)cRec, (unsigned long)cSent, (unsigned long)cTxDrop, (unsigned long)cRecv,
                  (unsigned long)cLost, (unsigned long)cPlayed, (unsigned long)cUnder, (unsigned long)cOver);
-  Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) prefill=%u ms cap=%u ms ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+#if VOICE_XPORT_UART   /* провод: формат как прежде (строка codec с "| rx err ...") — не менять */
+  {
+    UartPort_Stats s; UartPort_GetStats(&s);
+    Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) prefill=%u ms cap=%u ms ptt=%s tone=%s | rx err ore=%lu fe=%lu pe=%lu ne=%lu\r\n",
+                   codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
+                   (g_decim == DECIM_FIR) ? "fir" : "avg",
+                   (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
+                   (unsigned)(g_jbPrefill / AUDIO_BLOCK_SAMPLES), (unsigned)(JB_SIZE / AUDIO_BLOCK_SAMPLES),
+                   (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
+                   (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
+  }
+#else  /* UWB: строка codec без rx-err + отдельная radio-строка */
+  Console_Printf("voice: codec=%s rate=%u Hz decim=%s jb_fill=%u (%u ms) prefill=%u ms cap=%u ms ptt=%s tone=%s\r\n",
                  codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
                  (g_decim == DECIM_FIR) ? "fir" : "avg",
                  (unsigned)jb_fill(), (unsigned)(jb_fill() / AUDIO_BLOCK_SAMPLES),
                  (unsigned)(g_jbPrefill / AUDIO_BLOCK_SAMPLES), (unsigned)(JB_SIZE / AUDIO_BLOCK_SAMPLES),
-                 (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"),
-                 (unsigned long)s.errOre, (unsigned long)s.errFe, (unsigned long)s.errPe, (unsigned long)s.errNe);
+                 (g_ptt ? "on" : "off"), (g_tone ? "on" : "off"));
+  {
+    uint32_t tx = 0u, rx = 0u, crc = 0u, phe = 0u, to = 0u, sw = 0u;
+    Dw3000Port_GetVoiceStats(&tx, &rx, &crc, &phe, &to, &sw);
+    Console_Printf("radio: inited=%u tx=%lu rx=%lu lostSeq=%lu crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu\r\n",
+                   (unsigned)Dw3000Port_IsInited(), (unsigned long)tx, (unsigned long)rx,
+                   (unsigned long)cLost, (unsigned long)crc, (unsigned long)phe,
+                   (unsigned long)to, (unsigned long)sw);
+  }
+#endif
   /* Диагностика срыва дедлайна аудио-выхода (TASK_isr_deadline_probe) — отдельными строками. */
   {
     Audio_OutProbe ap;
-    uint32_t bcalls = 0u, bmax = 0u, bavg = 0u, blong = 0u;
     Audio_GetOutProbe(&ap);
-    UartPort_GetRxIsrProbe(&bcalls, &bmax, &bavg, &blong);
     Console_Printf("probeA out-rearm: calls=%lu over(>%luus)=%lu max=%luus first=%lus last=%lus lastmin=%lu%s\r\n",
                    (unsigned long)ap.calls, (unsigned long)ap.threshUs, (unsigned long)ap.over,
                    (unsigned long)ap.maxUs, (unsigned long)ap.firstSec, (unsigned long)ap.lastSec,
                    (unsigned long)ap.lastMinOver, (ap.lastMinCapped != 0u) ? "(capped)" : "");
-    Console_Printf("probeB rx-isr: calls=%lu max=%luus avg=%luus long(>%uus)=%lu\r\n",
-                   (unsigned long)bcalls, (unsigned long)bmax, (unsigned long)bavg,
-                   (unsigned)UARTPORT_RXISR_LONG_US, (unsigned long)blong);
+#if VOICE_XPORT_UART
+    {
+      uint32_t bcalls = 0u, bmax = 0u, bavg = 0u, blong = 0u;
+      UartPort_GetRxIsrProbe(&bcalls, &bmax, &bavg, &blong);
+      Console_Printf("probeB rx-isr: calls=%lu max=%luus avg=%luus long(>%uus)=%lu\r\n",
+                     (unsigned long)bcalls, (unsigned long)bmax, (unsigned long)bavg,
+                     (unsigned)UARTPORT_RXISR_LONG_US, (unsigned long)blong);
+    }
+#endif
     Console_Printf("probeC offload: qover=%lu qdepth=%u loop_max=%luus\r\n",
                    (unsigned long)cQover, (unsigned)FQ_DEPTH,
                    (unsigned long)(loopMaxCyc / (SystemCoreClock / 1000000u)));
@@ -763,6 +844,7 @@ static void cmd_voice(int argc, char **argv)
                    (unsigned long)dMax, (unsigned long)dAvg, (unsigned long)c2DecCnt);
   }
 }
+#if VOICE_XPORT_UART
 static void cmd_proto(int argc, char **argv)
 {
   (void)argc; (void)argv;
@@ -770,6 +852,7 @@ static void cmd_proto(int argc, char **argv)
                  (unsigned long)rxDec.stats.framesRx, (unsigned long)rxDec.stats.framesCrc,
                  (unsigned long)rxDec.stats.resync, (unsigned long)rxDec.stats.bytesDropped);
 }
+#endif
 static void cmd_ptt(int argc, char **argv)
 {
   if (argc < 2) { Console_Printf("ptt(cmd) = %s\r\n", g_pttCmd ? "on" : "off"); return; }
@@ -780,6 +863,7 @@ static void cmd_ptt(int argc, char **argv)
 /* tone on [freq] | off — тон на ВХОДНОЙ частоте 16 кГц (проходит через децимацию); freq по
  * умолчанию 1000 Гц. Тест фильтра: tone on 5000 + rate 8000 при decim fir не проходит
  * (−60 дБ), а при decim avg отражается в 3 кГц — слышимая разница до/после фильтра. */
+#if VOICE_XPORT_UART   /* tone — тест-сигнал, провод LAB07 */
 static void cmd_tone(int argc, char **argv)
 {
   if (argc < 2)
@@ -804,6 +888,7 @@ static void cmd_tone(int argc, char **argv)
 }
 
 /* codec [raw|ulaw|adpcm|codec2] — четвёртый вариант, codec2, вокодер (всегда 8 кГц). */
+#endif /* VOICE_XPORT_UART: tone */
 static void cmd_codec(int argc, char **argv)
 {
   if (argc > 1)
@@ -837,6 +922,7 @@ static void cmd_c2mode(int argc, char **argv)
 /* headroom [0|3|6|9|12] — аттенюация микрофонного PCM ДО кодека, дБ (запас по уровню против
  * перегрузки на громкой речи). 0 = без аттенюации (демонстрация перегрузки для методички). Уровень
  * подбирается по измерителю в voice; дефолт см. docs/REPORT_input_headroom.md. */
+#if VOICE_XPORT_UART   /* headroom/decim/rate — провод LAB07 */
 static void cmd_headroom(int argc, char **argv)
 {
   static const struct { uint8_t db; uint16_t gainQ8; } tab[] = {
@@ -887,6 +973,7 @@ static void cmd_rate(int argc, char **argv)
 /* prefill [ms] — порог наполнения джиттер-буфера перед стартом воспроизведения. Умолч. 60 мс.
  * Больше prefill — устойчивее к джиттеру канала (HC-12: 4–80 мс), но выше задержка «рот→динамик».
  * Лимит — не выше половины ёмкости буфера (JB_PREFILL_MAX = 128 мс при ёмкости 256 мс). */
+#endif /* VOICE_XPORT_UART: headroom/decim/rate */
 static void cmd_prefill(int argc, char **argv)
 {
   if (argc > 1)
@@ -910,6 +997,7 @@ static void cmd_prefill(int argc, char **argv)
 }
 
 /* load — загрузка ядра кодеком (DWT). µs на блок и % от реального времени блока (BLOCK_MS). */
+#if VOICE_XPORT_UART   /* load/budget/c2load/phy/rs485 — провод LAB07/08 */
 static void cmd_load(int argc, char **argv)
 {
   uint32_t eus, dus, period_us;
@@ -995,7 +1083,11 @@ static void cmd_budget(int argc, char **argv)
   }
 }
 
-/* ================= ЗАМЕР ЗАГРУЗКИ CODEC2 (TASK_codec2_port_and_load) =================
+#endif /* VOICE_XPORT_UART: load/budget */
+
+/* Аллокатор Codec2 (пул) — нужен ВСЕМ работам с Codec2 (в т.ч. UWB LAB09), поэтому вне транспортного
+ * guard. Ниже (stk/c2load) — снова только провод.
+ * ================= ЗАМЕР ЗАГРУЗКИ CODEC2 (TASK_codec2_port_and_load) =================
  * Голый замер БЕЗ интеграции в тракт: тракт речи (raw/ulaw/adpcm, кадрирование, джиттер)
  * не меняется, Codec2 к нему не подключается. Codec2 собран под __EMBEDDED__ и зовёт внешние
  * codec2_malloc/free — даём аллокатор на СТАТИЧЕСКОМ пуле (без кучи; high-water пула = ОЗУ
@@ -1030,6 +1122,7 @@ void codec2_free(void *ptr)
   if (c2PoolCnt == 0u) { c2PoolTop = 0u; }   /* всё освобождено (destroy) → сброс пула */
 }
 
+#if VOICE_XPORT_UART   /* stk-замер + c2load + phy/rs485 — провод LAB07/08 */
 /* Замер расхода стека заливкой известным значением. ВАЖНО (регресс прошлой версии): заливать
  * можно ТОЛЬКО зону НИЖЕ живых кадров, и делать это ПОД ЗАПРЕТОМ ПРЕРЫВАНИЙ — иначе кадр
  * прерывания (аудио-выход теперь высшего приоритета, с FPU-контекстом) попадёт в заливаемую
@@ -1221,12 +1314,14 @@ static void cmd_rs485(int argc, char **argv)
                  (unsigned long)s.turnaroundLastUs, (unsigned long)s.turnaroundMaxUs,
                  (unsigned long)s.premature, (unsigned long)s.watchdogTrips, (unsigned long)s.errorDrops);
 }
+#endif /* VOICE_XPORT_UART: phy/rs485 */
 
 /* ================= НАБОРЫ КОМАНД ПО РАБОТАМ (этап 2 разделения) =================
  * Обработчики общие (движок), а curated-наборы — по работе. Обе таблицы компилируются в обеих
  * конфигурациях (voice.c общий), адаптер выбирает свою геттером Voice_CmdsLabNN. Так все обработчики
  * ссылаемы (нет unused-warning), а на консоли у каждой работы — только её команды. */
 
+#if VOICE_XPORT_UART
 /* LAB07 «сжатие на проводе»: полная лесенка кодеков + отладочные инструменты (вкл. RS-485 стенд). */
 static const console_cmd_t k_cmds_lab07[] =
 {
@@ -1277,6 +1372,26 @@ const console_cmd_t *Voice_CmdsLab08(uint16_t *count)
   if (count != NULL) { *count = (uint16_t)(sizeof(k_cmds_lab08) / sizeof(k_cmds_lab08[0])); }
   return k_cmds_lab08;
 }
+#endif /* VOICE_XPORT_UART: наборы LAB07/08 */
+
+#if VOICE_XPORT_UWB
+/* LAB09 «речь по радио UWB»: узкий полевой набор (вокодер), радийные команды добавляет адаптер. */
+static const console_cmd_t k_cmds_lab09[] =
+{
+  { "reset",    "reset all counters",                       cmd_reset    },
+  { "codec",    "codec raw|ulaw|adpcm|codec2",              cmd_codec    },
+  { "c2mode",   "codec2 mode 3200|2400|1600|1300|700C",     cmd_c2mode   },
+  { "prefill",  "prefill [ms] jitter-buffer start",         cmd_prefill  },
+  { "voice",    "voice path stats + radio counters",        cmd_voice    },
+  { "ptt",      "ptt on|off (latches tx; blocks rx)",       cmd_ptt      },
+  { "stat",     "radio link statistics",                    cmd_stat     },
+};
+const console_cmd_t *Voice_CmdsLab09(uint16_t *count)
+{
+  if (count != NULL) { *count = (uint16_t)(sizeof(k_cmds_lab09) / sizeof(k_cmds_lab09[0])); }
+  return k_cmds_lab09;
+}
+#endif /* VOICE_XPORT_UWB */
 
 /* ================= ИНТЕРФЕЙС ДВИЖКА =================
  * cfg — стартовые умолчания работы (кодек/частота/режим Codec2/скорость линии); cmds/ncmds — её
@@ -1303,9 +1418,13 @@ uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t n
   Console_Init();
   Console_Register(cmds, ncmds);
 
+#if VOICE_XPORT_UART
   Frame_DecoderInit(&rxDec);
   UartPort_Init();
   UartPort_SetRxTap(voice_rx_byte);
+#endif
+  /* Транспорт LAB09 (радио UWB) поднимает адаптер: SPI4 + сброс модуля до Voice_Init; полная
+   * инициализация DW3000 — командой uwbinit. Здесь ставить нечего (кроме аудио/вытеснения). */
 
   if (Audio_Init() != 0u)
   {
@@ -1314,19 +1433,30 @@ uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t n
     return 1u;
   }
 
+#if VOICE_XPORT_UART
   /* Стартовая скорость линии работы (обходит граблю «baud из .ioc»). SetBaud — DeInit/Init USART2,
    * его MspInit сбрасывает приоритеты в (0,0); следующий Preempt их восстановит. */
   UartPort_SetBaud((cfg != NULL) ? cfg->baud : 460800u);
+#endif
 
-  /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение. */
+  /* После всех MspInit (USART2/DMA/I2S приоритеты уже расставлены): включить вытеснение
+   * (аудио-выход старше приёмных ISR). Для радио тоже нужно — аудио-выход не должен опаздывать. */
   Preempt_AudioOutHighest();
 
+#if VOICE_XPORT_UART
   TRACE_LOG("LAB%02u voice: codec=%s rate=%u Hz, block=%u ms, USART2 %lu 8N1", (unsigned)LAB_ID,
             codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u),
             (unsigned)BLOCK_MS, (unsigned long)UartPort_GetBaud());
   Console_Printf("\r\nLAB%02u ready: codec=%s rate=%u Hz baud=%lu. Hold PA0 to talk. 'help'.\r\n",
                  (unsigned)LAB_ID, codec_disp_name(g_codec),
                  (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u), (unsigned long)UartPort_GetBaud());
+#else  /* UWB */
+  TRACE_LOG("LAB%02u voice/UWB: codec=%s rate=%u Hz, block=%u ms (run 'uwbinit')", (unsigned)LAB_ID,
+            codec_disp_name(g_codec), (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u), (unsigned)BLOCK_MS);
+  Console_Printf("\r\nLAB%02u UWB voice ready: codec=%s rate=%u Hz. Run 'uwbinit', hold PA0 to talk. 'help'.\r\n",
+                 (unsigned)LAB_ID, codec_disp_name(g_codec),
+                 (unsigned)((g_rate == RATE_8K) ? 8000u : 16000u));
+#endif
   return 0u;
 }
 
@@ -1367,12 +1497,24 @@ void Voice_Process(void)
     accN = 0u; c2TxHead = 0u; c2TxTail = 0u;
     if (prim == 0u) { __enable_irq(); }
   }
-  else if ((g_ptt == 0u) && (pttPrev != 0u)) { c2TxTail = c2TxHead; }
+  else if ((g_ptt == 0u) && (pttPrev != 0u))
+  {
+    c2TxTail = c2TxHead;
+#if VOICE_XPORT_UWB
+    Dw3000Port_VoiceRxArm();   /* полудуплекс: после передачи явно вернуть приёмник в приём */
+#endif
+  }
   pttPrev = g_ptt;
 
+#if VOICE_XPORT_UWB
+  /* Приём радиокадров опросом (пока не PTT): драйвер отдаёт целый payload -> в ту же очередь. */
+  if (g_ptt == 0u) { Dw3000Port_VoicePoll(frame_enqueue); }
+#endif
   rx_drain();          /* offload: разбор принятых кадров здесь, а не в приёмном ISR */
   c2_tx_process();     /* codec2: кодирование накопленных отсчётов и отправка (тоже главный цикл) */
+#if VOICE_XPORT_UART
   UartPort_Rs485Poll();/* сторож направления RS-485: опустить DE, если передача зависла (no-op при TTL) */
+#endif
 
   if (g_ptt != 0u) { BSP_LED_On(LED3); } else { BSP_LED_Off(LED3); }
   if (Console_IsConfigured() != 0u)

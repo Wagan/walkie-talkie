@@ -207,12 +207,14 @@ static uint8_t  s_tx_seq   = 0u;
 
 /* Счётчики. */
 static uint32_t cnt_tx = 0u, cnt_rx = 0u, cnt_crc = 0u, cnt_phe = 0u, cnt_to = 0u;
+static uint32_t cnt_switch = 0u;    /* переключений TX->RX (взводов приёмника) */
+static uint8_t  s_rx_armed = 0u;    /* приёмник взведён (для голосового опроса) */
 
 /* Тест-кадр: маркер "WT" + порядковый номер + заполнение 0xA5. */
 #define TF_LEN     12u
 #define TF_FILL    0xA5u
 static uint8_t s_txbuf[TF_LEN];
-static uint8_t s_rxbuf[64];
+static uint8_t s_rxbuf[128];   /* вмещает голосовой payload (Codec2 малый; raw 8к ~84 Б) */
 
 /* Наборы масок статуса приёма. */
 #define RX_ERR_MASK  ((uint32_t)DWT_INT_RXPHE_BIT_MASK | (uint32_t)DWT_INT_RXFCE_BIT_MASK | \
@@ -454,6 +456,92 @@ void Dw3000Port_Poll(void)
     dwt_writesysstatuslo(RX_TO_MASK);
     rx_arm();
   }
+}
+
+/* =====================================================================================
+ *  Транспорт для голосового движка (voice.c): «отдать кадр / принять кадр».
+ * =====================================================================================*/
+
+uint8_t Dw3000Port_IsInited(void) { return s_inited; }
+
+/* Передать один payload как радиокадр (полудуплекс, полагаемся на FCS радио — SLIP не нужен). */
+uint8_t Dw3000Port_VoiceTx(const uint8_t *payload, uint16_t len)
+{
+  uint32_t t0;
+  if ((s_inited == 0u) || (payload == NULL)) { return 1u; }
+
+  s_rx_armed = 0u;                        /* передача выключает приём (полудуплекс) */
+  dwt_forcetrxoff();
+  dwt_writesysstatuslo((uint32_t)DWT_INT_TXFRS_BIT_MASK);
+  (void)dwt_writetxdata(len, (uint8_t *)payload, 0u);
+  dwt_writetxfctrl((uint16_t)(len + 2u), 0u, 0u);   /* +2 = автодобавляемый FCS */
+  if (dwt_starttx(DWT_START_TX_IMMEDIATE) != (int32_t)DWT_SUCCESS) { return 1u; }
+
+  t0 = HAL_GetTick();
+  while (((dwt_readsysstatuslo() & (uint32_t)DWT_INT_TXFRS_BIT_MASK) == 0u) &&
+         ((uint32_t)(HAL_GetTick() - t0) < 10u)) { }
+  if ((dwt_readsysstatuslo() & (uint32_t)DWT_INT_TXFRS_BIT_MASK) != 0u)
+  {
+    dwt_writesysstatuslo((uint32_t)DWT_INT_TXFRS_BIT_MASK);
+    cnt_tx++;
+    return 0u;
+  }
+  return 1u;
+}
+
+/* Опрос приёма из главного цикла: самовзвод приёмника + при готовом кадре — в sink (frame_enqueue). */
+void Dw3000Port_VoicePoll(void (*sink)(const uint8_t *payload, uint16_t len))
+{
+  uint32_t status;
+  if (s_inited == 0u) { return; }
+  if (s_rx_armed == 0u) { rx_arm(); s_rx_armed = 1u; cnt_switch++; }
+
+  status = dwt_readsysstatuslo();
+  if ((status & (uint32_t)DWT_INT_RXFCG_BIT_MASK) != 0u)
+  {
+    uint8_t  rng  = 0u;
+    uint16_t flen = dwt_getframelength(&rng);
+    uint16_t plen = (flen > 2u) ? (uint16_t)(flen - 2u) : 0u;
+    if (plen > (uint16_t)sizeof(s_rxbuf)) { plen = (uint16_t)sizeof(s_rxbuf); }
+    dwt_readrxdata(s_rxbuf, plen, 0u);
+    dwt_writesysstatuslo((uint32_t)DWT_INT_RXFCG_BIT_MASK | (uint32_t)DWT_INT_RXFR_BIT_MASK);
+    cnt_rx++;
+    if (sink != NULL) { sink(s_rxbuf, plen); }
+    rx_arm();
+  }
+  else if ((status & RX_ERR_MASK) != 0u)
+  {
+    if ((status & (uint32_t)DWT_INT_RXPHE_BIT_MASK) != 0u) { cnt_phe++; } else { cnt_crc++; }
+    dwt_writesysstatuslo(RX_ERR_MASK);
+    rx_arm();
+  }
+  else if ((status & RX_TO_MASK) != 0u)
+  {
+    cnt_to++;
+    dwt_writesysstatuslo(RX_TO_MASK);
+    rx_arm();
+  }
+}
+
+void Dw3000Port_VoiceRxArm(void)
+{
+  if (s_inited != 0u) { rx_arm(); s_rx_armed = 1u; cnt_switch++; }
+}
+
+void Dw3000Port_GetVoiceStats(uint32_t *tx, uint32_t *rx, uint32_t *crc,
+                              uint32_t *phe, uint32_t *to, uint32_t *sw)
+{
+  if (tx != NULL)  { *tx  = cnt_tx;  }
+  if (rx != NULL)  { *rx  = cnt_rx;  }
+  if (crc != NULL) { *crc = cnt_crc; }
+  if (phe != NULL) { *phe = cnt_phe; }
+  if (to != NULL)  { *to  = cnt_to;  }
+  if (sw != NULL)  { *sw  = cnt_switch; }
+}
+
+void Dw3000Port_ResetVoiceStats(void)
+{
+  cnt_tx = 0u; cnt_rx = 0u; cnt_crc = 0u; cnt_phe = 0u; cnt_to = 0u; cnt_switch = 0u;
 }
 
 #endif /* UWB_CHIP_DW3000 */

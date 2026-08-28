@@ -40,7 +40,8 @@ typedef struct
 
 /* Curated-наборы команд по работам (обработчики — в движке). Адаптер берёт свой. */
 const console_cmd_t *Voice_CmdsLab07(uint16_t *count);  /* провод: лесенка + отладка */
-const console_cmd_t *Voice_CmdsLab08(uint16_t *count);  /* радио: узкий полевой набор */
+const console_cmd_t *Voice_CmdsLab08(uint16_t *count);  /* радио HC-12: узкий полевой набор */
+const console_cmd_t *Voice_CmdsLab09(uint16_t *count);  /* радио UWB: узкий полевой набор */
 
 /* Инициализация голосового тракта: BSP (LED/кнопка), DWT, консоль + регистрация cmds, транспорт
  * USART2, аудио, вытеснение, стартовые умолчания из cfg (кодек/частота/режим/скорость). Печатает

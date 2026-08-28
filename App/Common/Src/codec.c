@@ -14,8 +14,9 @@
   */
 
 #include "lab.h"
+#include "uwb_config.h"
 
-#if (LAB_ID == 7) || (LAB_ID == 8)
+#if (LAB_ID == 7) || (LAB_ID == 8) || ((LAB_ID == 9) && defined(UWB_CHIP_DW3000))
 
 #include "codec.h"
 
