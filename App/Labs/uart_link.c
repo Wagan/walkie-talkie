@@ -74,6 +74,9 @@ void UartPort_OnTxDone(void)
 /* ================= ИНТЕРФЕЙС ЛАБОРАТОРНОЙ ================= */
 uint8_t Lab_Init(void)
 {
+  /* Стартовый баннер: номер работы из LAB_ID + время сборки (SWO; консоли у LAB02 нет). */
+  TRACE_LOG("=== LAB%02u build %s %s ===", (unsigned)(LAB_ID), __DATE__, __TIME__);
+
   BSP_LED_Init(LED3);
   BSP_LED_Init(LED4);
   BSP_LED_Init(LED5);

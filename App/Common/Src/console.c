@@ -86,6 +86,11 @@ static uint8_t  histPos   = 0u;         /* 0 — не листаем; 1..histCou
 static const console_cmd_t *g_cmds  = NULL;
 static uint16_t             g_count = 0u;
 
+/* Одноразовый стартовый баннер работы: номер из LAB_ID + время сборки компилятором. Печатается
+ * в консоль при первом подключении хоста — чтобы владелец видел, КАКАЯ работа реально залита
+ * (симптом ошибки: консоль отвечает, но активна не та конфигурация сборки). */
+static uint8_t bannerShown = 0u;
+
 /* ================= Низкий уровень вывода (в TX-кольцо, без логики сообщений) ================= */
 static void raw_put(uint8_t c)
 {
@@ -407,10 +412,21 @@ void Console_Init(void)
   escState = ESC_NONE; escNum = 0u;
   histCount = 0u; histHead = 0u; histPos = 0u;
   line[0] = '\0';
+  bannerShown = 0u;
 }
 
 void Console_Process(void)
 {
+  /* 0) Стартовый баннер работы — один раз, как только хост открыл порт. Номер из LAB_ID,
+   *    время — из компилятора (файл пересобирается при каждой смене конфигурации, т.к. -DLAB_ID
+   *    меняет командную строку). */
+  if ((bannerShown == 0u) && (Console_IsConfigured() != 0u))
+  {
+    bannerShown = 1u;
+    Console_Printf("\r\n=== LAB%02u  build %s %s ===\r\n",
+                   (unsigned)(LAB_ID), __DATE__, __TIME__);
+  }
+
   /* 1) Разобрать всё, что накопилось в приёмном кольце. Перед эхом убедиться, что строка
    *    ввода нарисована (иначе эхо ушло бы без приглашения). */
   while (rxTail != rxHead)

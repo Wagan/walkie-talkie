@@ -71,6 +71,9 @@ void Audio_OnError(const char *who)
 
 uint8_t Lab_Init(void)
 {
+  /* Стартовый баннер: номер работы из LAB_ID + время сборки (SWO; консоли у LAB00 нет). */
+  TRACE_LOG("=== LAB%02u build %s %s ===", (unsigned)(LAB_ID), __DATE__, __TIME__);
+
   /* Светодиоды: LED4 зелёный — init OK, LED6 синий — обработка, LED5 красный — ошибка. */
   BSP_LED_Init(LED4);
   BSP_LED_Init(LED5);
