@@ -48,6 +48,11 @@ uint8_t UwbChip_IsAlive(uint32_t devid, const char **variant);
 /* Строка про потолок частоты SPI в текущем (после сброса) состоянии — для spistat. */
 const char *UwbChip_SpiCeilingNote(void);
 
+/* Прочитать DEV_ID ЧЕРЕЗ драйвер производителя (если он есть у семейства). Возврат 1 и значение
+ * в *out, если получено драйвером; 0 если драйвера нет (тогда общий движок читает напрямую).
+ * У DW3000 — через Qorvo dwt_uwb_driver (платформенный слой dw3000_port); у DW1000 — нет. */
+uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out);
+
 #ifdef __cplusplus
 }
 #endif

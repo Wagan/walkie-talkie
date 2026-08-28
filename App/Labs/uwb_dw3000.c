@@ -28,6 +28,8 @@
 
 #if defined(UWB_CHIP_DW3000)
 
+#include "dw3000_port.h"   /* платформенный слой Qorvo dwt_uwb_driver (наш код) */
+
 #define DW3000_DEVID_NONPDOA  0xDECA0302u
 #define DW3000_DEVID_PDOA     0xDECA0312u
 
@@ -66,6 +68,12 @@ uint8_t UwbChip_IsAlive(uint32_t devid, const char **variant)
 const char *UwbChip_SpiCeilingNote(void)
 {
   return "SPI ceiling: 7 MHz in INIT_RC after reset, up to 38 MHz in IDLE_PLL (DW3000 UM Table 4).";
+}
+
+uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out)
+{
+  /* Через Qorvo dwt_uwb_driver (dwt_probe + dwt_readdevid) поверх нашего платформенного слоя. */
+  return Dw3000Port_ReadDevId(out);
 }
 
 #endif /* UWB_CHIP_DW3000 */

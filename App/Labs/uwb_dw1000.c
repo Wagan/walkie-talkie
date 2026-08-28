@@ -58,6 +58,13 @@ const char *UwbChip_SpiCeilingNote(void)
   return "SPI ceiling: 3 MHz in INIT state after reset, up to 20 MHz in IDLE (DW1000 UM Table 1).";
 }
 
+uint8_t UwbChip_ReadDevIdViaDriver(uint32_t *out)
+{
+  /* Для DW1000 драйвер не перенесён — чтение только прямой транзакцией общего движка. */
+  (void)out;
+  return 0u;
+}
+
 #endif /* UWB_CHIP_DW1000 */
 
 #endif /* LAB_ID == 9 */

@@ -64,6 +64,12 @@
   - `ThirdParty/PDM2PCM/Inc/pdm2pcm_glo.h` — заголовок API;
   - `ThirdParty/PDM2PCM/Lib/libPDMFilter_CM4_GCC_wc32.a` — готовая библиотека под Cortex-M4F;
 - библиотека вокодера **Codec2** (лицензия **LGPL 2.1**) — используется в LAB07/LAB08.
+- драйвер UWB-модуля **DW3000** (`ThirdParty/dw3000_driver/`): исходники `dwt_uwb_driver`
+  **версии 08.02.02** из пакета Qorvo `DW3_QM33_SDK_1.0.2` (источник — зеркало
+  `github.com/br101/dw3000-decadriver-source`), под **лицензией Qorvo**
+  (`LICENSES/LicenseRef-QORVO-2.txt`: использование только с микросхемами Qorvo, запрет
+  реверс-инжиниринга); предсобранная `Lib/libdw3000_cm4.a` (Cortex-M4F). Используется в LAB09
+  (сборка DW3000). Платформенный слой под STM32F411/SPI4 — наш код в `App/Common` (`dw3000_port`).
 
 Раньше PDM2PCM лежала в `Middlewares/…/PDM` (как в примере ST), и очередная генерация
 из `.ioc` удалила её вместе со всем `Middlewares/`, из-за чего сборка падала. Перенос в

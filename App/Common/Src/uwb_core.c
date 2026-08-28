@@ -97,30 +97,14 @@ static uint32_t uwb_sck_hz(uint32_t *outDiv)
 
 /* ================= Обработчики команд ================= */
 
-/* devid — прочитать регистр идентификатора, напечатать сырые байты, значение и вердикт.
+/* Печать значения DEV_ID и вердикта (общая для чтения через драйвер и прямого чтения).
  * Вердикт сравнивает с семейством, под которое собрана прошивка (UwbChip_*). */
-static void cmd_devid(int argc, char **argv)
+static void devid_verdict(uint32_t val, const char *source)
 {
-  uint8_t b[4] = { 0u, 0u, 0u, 0u };
-  HAL_StatusTypeDef st;
-  uint32_t val;
   const char *variant = "";
-  (void)argc; (void)argv;
 
-  st = uwb_read_reg(UWB_REG_DEV_ID, b, 4u);
-  if (st != HAL_OK)
-  {
-    Console_Printf("devid: SPI transfer error (HAL status=%d)\r\n", (int)st);
-    return;
-  }
-
-  /* Октеты младшим вперёд: b[0]=младший ... b[3]=старший. */
-  val = ((uint32_t)b[3] << 24) | ((uint32_t)b[2] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[0];
-
-  Console_Printf("devid raw (bus order, low octet first): %02X %02X %02X %02X\r\n",
-                 (unsigned)b[0], (unsigned)b[1], (unsigned)b[2], (unsigned)b[3]);
-  Console_Printf("family=%s devid=0x%08lX (expected 0x%08lX)\r\n",
-                 UwbChip_Family(), (unsigned long)val, (unsigned long)UwbChip_DevIdExpected());
+  Console_Printf("family=%s via=%s devid=0x%08lX (expected 0x%08lX)\r\n",
+                 UwbChip_Family(), source, (unsigned long)val, (unsigned long)UwbChip_DevIdExpected());
 
   if (UwbChip_IsAlive(val, &variant) != 0u)
   {
@@ -150,6 +134,57 @@ static void cmd_devid(int argc, char **argv)
     Console_Printf("verdict: unexpected value - not the %s id (check wiring, SCK, SPI mode 0).\r\n",
                    UwbChip_Family());
   }
+}
+
+/* Прямое чтение DEV_ID нашей транзакцией (заголовок строит адаптер семейства). */
+static uint8_t devid_read_direct(uint32_t *out, uint8_t *raw)
+{
+  uint8_t b[4] = { 0u, 0u, 0u, 0u };
+  if (uwb_read_reg(UWB_REG_DEV_ID, b, 4u) != HAL_OK) { return 0u; }
+  if (raw != NULL) { raw[0] = b[0]; raw[1] = b[1]; raw[2] = b[2]; raw[3] = b[3]; }
+  /* Октеты младшим вперёд: b[0]=младший ... b[3]=старший. */
+  *out = ((uint32_t)b[3] << 24) | ((uint32_t)b[2] << 16) | ((uint32_t)b[1] << 8) | (uint32_t)b[0];
+  return 1u;
+}
+
+/* devid — прочитать идентификатор ЧЕРЕЗ драйвер, если он есть у семейства (доказывает
+ * корректность платформенного слоя: тот же ответ, полученный чужим кодом через наш SPI).
+ * Если драйвера нет (DW1000) — прямое чтение общим движком. */
+static void cmd_devid(int argc, char **argv)
+{
+  uint32_t val = 0u;
+  (void)argc; (void)argv;
+
+  if (UwbChip_ReadDevIdViaDriver(&val) != 0u)
+  {
+    devid_verdict(val, "driver");
+  }
+  else if (devid_read_direct(&val, NULL) != 0u)
+  {
+    devid_verdict(val, "direct");
+  }
+  else
+  {
+    Console_Write("devid: SPI transfer error\r\n");
+  }
+}
+
+/* devidraw — ПРЯМОЕ чтение нашей транзакцией (без драйвера), с сырыми байтами. Для сравнения,
+ * если драйвер поведёт себя странно. */
+static void cmd_devidraw(int argc, char **argv)
+{
+  uint8_t b[4] = { 0u, 0u, 0u, 0u };
+  uint32_t val = 0u;
+  (void)argc; (void)argv;
+
+  if (devid_read_direct(&val, b) == 0u)
+  {
+    Console_Write("devidraw: SPI transfer error\r\n");
+    return;
+  }
+  Console_Printf("devidraw (bus order, low octet first): %02X %02X %02X %02X\r\n",
+                 (unsigned)b[0], (unsigned)b[1], (unsigned)b[2], (unsigned)b[3]);
+  devid_verdict(val, "direct");
 }
 
 /* dwreset — повторить процедуру аппаратного сброса модуля. */
@@ -183,8 +218,9 @@ static void cmd_spistat(int argc, char **argv)
 /* Таблица команд (help — встроенная в console.c). */
 static const console_cmd_t k_cmds[] =
 {
-  { "devid",   "read DEV_ID and verify vs the built-for chip family", cmd_devid   },
-  { "dwreset", "hardware-reset the UWB module via RSTn",              cmd_dwreset },
+  { "devid",   "read DEV_ID (via driver if present) and verify",     cmd_devid    },
+  { "devidraw","read DEV_ID by direct SPI (no driver), raw bytes",   cmd_devidraw },
+  { "dwreset", "hardware-reset the UWB module via RSTn",              cmd_dwreset  },
   { "spistat", "show actual SCK frequency and SPI mode/ceiling",     cmd_spistat },
 };
 
