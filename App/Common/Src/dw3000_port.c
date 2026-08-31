@@ -29,6 +29,7 @@
 #include "deca_device_api.h"
 #include "deca_interface.h"
 #include "trace_log.h"
+#include "voice.h"          /* Voice_IsPtt(): взводить приёмник в конце uwbinit, если не держим PTT */
 #include <string.h>
 #include <stdlib.h>
 
@@ -238,7 +239,19 @@ static int radio_init(void)
 {
   uint32_t t0;
 
-  s_inited = 0u;
+  s_inited   = 0u;
+  s_rx_armed = 0u;             /* сброс чипа снимает взвод приёмника — отразим в нашем состоянии */
+
+  /* Пункт 1: аппаратный сброс модуля ПЕРВЫМ шагом (тот же RSTn-механизм, что команда dwreset).
+   * Без него повторный uwbinit застревает на ожидании IDLE_RC: после configure чип в IDLE_PLL,
+   * событие RCINIT в SYS_STATUS больше не выставляется, dwt_checkidlerc() не проходит (таймаут).
+   * Сброс возвращает INIT_RC->IDLE_RC и заново выставляет RCINIT. См. REPORT_lab09_init_fixes §3. */
+  Console_Write("uwbinit: hard reset (RSTn)...\r\n");
+  Console_Flush();
+  Uwb_HardReset();
+  spi_slow();                  /* INIT_RC после сброса: SCK <= 7 МГц до dwt_initialise (UM Table 4) */
+  s_probed = 0u;               /* заново выбрать драйвер чтением DEV_ID на свежесброшенном чипе */
+
   Console_Write("uwbinit: probe (DEV_ID)...\r\n");
   Console_Flush();
   if (Dw3000Port_Probe() != 0)
@@ -277,7 +290,14 @@ static int radio_init(void)
 
   dwt_setrxtimeout(0u);           /* приём без таймаута (ждём кадр непрерывно) */
   s_inited = 1u;
+
+  /* Пункт 2: взвести приёмник по окончании инициализации, чтобы плата, ни разу не передававшая,
+   * уже слышала встречную (раньше приём включался только на фронте PTT 1->0). Диагностический путь
+   * uwbrx имеет свой флаг s_rx_active; голосовой путь взводим, только если оператор не держит PTT
+   * (режим передачи приоритетнее — там взвод произойдёт штатно на отпускании PTT). Самовзвод в
+   * Dw3000Port_VoicePoll остаётся страховкой. */
   if (s_rx_active != 0u) { rx_arm(); }
+  else if (Voice_IsPtt() == 0u) { rx_arm(); s_rx_armed = 1u; cnt_switch++; }
 
   Console_Printf("uwbinit: DONE - chan=%u rate=%s plen=128 pac=8 code=9 (PRF64) sfd=DW8\r\n",
                  (unsigned)s_cfg.chan, rate_str());

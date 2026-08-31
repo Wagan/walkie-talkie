@@ -23,6 +23,10 @@ extern "C" {
 #include <stdint.h>
 #include "console.h"   /* console_cmd_t */
 
+/* Аппаратный сброс модуля по RSTn (реализован в uwb_core.c; тот же механизм, что команда dwreset).
+ * uwbinit зовёт его первым шагом, иначе повторная инициализация застревает на ожидании IDLE_RC. */
+void Uwb_HardReset(void);
+
 /* Инициализация платформенного слоя (счётчик циклов DWT для мкс-задержек). */
 void Dw3000Port_Init(void);
 

@@ -107,6 +107,20 @@ static volatile uint16_t g_toneHz = 1000u;              /* частота тон
 static uint8_t           g_pttCmd = 0u;
 static volatile uint8_t  g_c2mode = 0u;                 /* индекс режима Codec2 в c2ModeTab (0 = 3200) */
 
+/* Текущее состояние PTT для внешних адаптеров (LAB09 uwbinit: взводить приёмник, только если не
+ * держим передачу). */
+uint8_t Voice_IsPtt(void) { return g_ptt; }
+
+#if VOICE_XPORT_UWB
+/* Зелёный LED4 = индикатор приёма кадра: зажигаем при приёме, гасим по таймеру из главного цикла
+ * (TASK_lab09_init_fixes п.3). Раньше LED4 просто переключался на каждый кадр (BSP_LED_Toggle) и
+ * при остановке потока мог «залипнуть» включённым. Порог 50 мс — предложение, меняется одной
+ * строкой. Для проводных работ (LAB07/08) поведение LED4 не меняем. */
+#define RX_LED_ON_MS   50u
+static uint32_t g_rxLedTick = 0u;
+static uint8_t  g_rxLedOn   = 0u;
+#endif
+
 /* Запас по уровню (headroom) ПЕРЕД кодеком (TASK_input_headroom). Микрофонный PDM-фильтр BSP отдаёт
  * PCM с высоким фиксированным усилением (mic_gain=24, BSP не трогаем); на громкой речи отсчёты
  * подходят к полной шкале → насыщение (FIR, предсказатель ADPCM) и перегрузка ADPCM по крутизне =
@@ -524,7 +538,11 @@ static void voice_sink(const uint8_t *payload, uint16_t len)
 
   if (len < VOICE_HDR) { return; }
   cRecv++;
+#if VOICE_XPORT_UWB
+  BSP_LED_On(LED4); g_rxLedTick = HAL_GetTick(); g_rxLedOn = 1u;  /* приём: зажечь, гасим по таймеру в Voice_Process */
+#else
   BSP_LED_Toggle(LED4);
+#endif
   if (g_ptt != 0u) { return; }
 
   seq    = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
@@ -1517,6 +1535,15 @@ void Voice_Process(void)
 #endif
 
   if (g_ptt != 0u) { BSP_LED_On(LED3); } else { BSP_LED_Off(LED3); }
+#if VOICE_XPORT_UWB
+  /* Погасить зелёный LED4 приёма, если после последнего принятого кадра прошло > RX_LED_ON_MS
+   * (при потоке речи кадр каждые 20 мс LED горит почти постоянно; после остановки — гаснет). */
+  if ((g_rxLedOn != 0u) && ((uint32_t)(now - g_rxLedTick) >= RX_LED_ON_MS))
+  {
+    BSP_LED_Off(LED4);
+    g_rxLedOn = 0u;
+  }
+#endif
   if (Console_IsConfigured() != 0u)
   {
     if ((uint32_t)(now - lastBlink) >= 250u) { lastBlink = now; BSP_LED_Toggle(LED6); }

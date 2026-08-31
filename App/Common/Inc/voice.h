@@ -52,6 +52,10 @@ uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t n
  * сторож RS-485, антидребезг PTT, индикация. Вызывать в while(1) через Lab_Process работы. */
 void Voice_Process(void);
 
+/* Текущее состояние PTT (кнопка PA0 или команда ptt): 1 = передаём, 0 = слушаем. LAB09 использует
+ * при взводе приёмника в конце uwbinit — не взводить, если оператор держит передачу. */
+uint8_t Voice_IsPtt(void);
+
 #ifdef __cplusplus
 }
 #endif
