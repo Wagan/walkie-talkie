@@ -59,3 +59,265 @@ probeC offload: qover=0 qdepth=16 loop_max=38356us
 headroom: atten=6dB gainQ8=128 | pre peak=21784 nearFS=0 | post peak=10892 nearFS=0 (thr=32000)
 codec2: mode=3200 frame=20ms ring_over=0 | enc max=13105us avg=12607us (n=3029) | dec max=10992us avg=8953us (n=3054)
 
+==============
+Тест 3
+==============
+LAB08
+> voice
+voice: rec=263220 sent=3330 txdrop=1 recv=3071 lost=2 played=61460 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=263219 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3421 max=209us avg=68us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=39026us
+headroom: atten=6dB gainQ8=128 | pre peak=15730 nearFS=0 | post peak=7865 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13125us avg=12643us (n=3331) | dec max=11070us avg=9146us (n=3071)
+======
+> voice
+voice: rec=290777 sent=3071 txdrop=2 recv=3330 lost=1 played=66620 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=290777 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3862 max=181us avg=66us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=40472us
+headroom: atten=6dB gainQ8=128 | pre peak=19533 nearFS=0 | post peak=9766 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13117us avg=12637us (n=3073) | dec max=11117us avg=9150us (n=3330)
+==============
+
+LAB07
+1. Умолчания при старте
+[I] LAB07 voice: codec=raw rate=16000 Hz, block=5 ms, USART2 921600 8N1
+LAB07 ready: codec=raw rate=16000 Hz baud=921600. Hold PA0 to talk. 'help'.
+>
+
+2. Сырой PCM ок
+Вывод с приемной платы
+> voice
+voice: rec=189768 sent=0 txdrop=0 recv=904 lost=0 played=4520 under=1 over=0
+voice: codec=raw rate=16000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=4460 pe=0 ne=0
+probeA out-rearm: calls=189767 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=5009 max=624us avg=145us long(>250us)=905
+probeC offload: qover=0 qdepth=16 loop_max=821us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+
+3. Набор команд
+> help
+commands:
+  help          - list commands
+  send        - send [n] test packets
+  sendbyte    - send one raw byte
+  stat        - link byte/error statistics
+  reset       - reset all counters
+  dump        - hex of last raw received bytes
+  regs        - USART2 registers
+  baud        - show/set UART baud
+  voice       - voice path stats + rx line errors
+  proto       - framing protocol statistics (rx)
+  ptt         - ptt on|off (latches tx; blocks rx)
+  tone        - tone on [freq]|off (default 1 kHz)
+  codec       - codec raw|ulaw|adpcm|codec2
+  c2mode      - codec2 mode 3200|2400|1600|1300|700C
+  rate        - rate 8000|16000
+  decim       - decim fir|avg (16->8 anti-alias)
+  headroom    - mic atten before codec (0|3|6|9|12 dB)
+  load        - codec core load (us/block, %)
+  budget      - channel budget table (HC-12)
+  c2load      - Codec2 encode/decode load (bench, no path)
+  phy         - phy ttl|rs485 (line physical layer)
+  rs485       - rs485 dir stats [guard/wd setters]
+
+4. Лесенка на слух
+Вывод с приемной платы при codec=ulaw Качество приемлемое, все разборчиво
+> voice
+voice: rec=28915 sent=0 txdrop=0 recv=1357 lost=0 played=6785 under=1 over=0
+voice: codec=ulaw rate=16000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=28915 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=4066 max=368us avg=141us long(>250us)=1217
+probeC offload: qover=0 qdepth=16 loop_max=591us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+
+Вывод с приемной платы при codec=adpcm Качество приемлемое, все разборчиво
+> voice
+voice: rec=19939 sent=0 txdrop=0 recv=931 lost=0 played=4655 under=1 over=0
+voice: codec=adpcm rate=16000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=19939 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=2423 max=263us avg=102us long(>250us)=1
+probeC offload: qover=0 qdepth=16 loop_max=547us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+
+5. Проверка единства движка
+Гонял в ту и другую сторону по минуте, два вывода:
+> voice
+voice: rec=197891 sent=3036 txdrop=0 recv=3033 lost=130765 played=60015 under=3 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=8 pe=0 ne=0
+probeA out-rearm: calls=197890 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=5016 max=659us avg=76us long(>250us)=47
+probeC offload: qover=0 qdepth=16 loop_max=14391us
+headroom: atten=6dB gainQ8=128 | pre peak=19066 nearFS=0 | post peak=9533 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13093us avg=12611us (n=3036) | dec max=10912us avg=9044us (n=2990)
+---
+> voice
+voice: rec=199279 sent=2989 txdrop=45 recv=3036 lost=0 played=60720 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=16 pe=0 ne=1
+probeA out-rearm: calls=199279 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3633 max=216us avg=67us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=58402us
+headroom: atten=6dB gainQ8=128 | pre peak=17956 nearFS=0 | post peak=8978 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=20669us avg=12648us (n=3034) | dec max=10973us avg=9070us (n=3036)
+
+6. Режимы вокодера
+c2mode 1600 сильное эхо, но все качественно
+вывод с приемной платы
+> voice
+voice: rec=412654 sent=2989 txdrop=45 recv=3140 lost=0 played=64880 under=2 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=16 pe=0 ne=1
+probeA out-rearm: calls=412654 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=3768 max=216us avg=67us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=58402us
+headroom: atten=6dB gainQ8=128 | pre peak=17956 nearFS=0 | post peak=8978 nearFS=0 (thr=32000)
+codec2: mode=1600 frame=40ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=19907us avg=17480us (n=104)
+--
+c2mode 1300 Небольшое эхо, но больше металла в голосе
+вывод с приемной платы
+> voice
+voice: rec=39773 sent=0 txdrop=0 recv=126 lost=0 played=5040 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=39774 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=169 max=72us avg=52us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=32980us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+codec2: mode=1300 frame=40ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=21728us avg=17458us (n=126)
+--
+c2mode 700C странно, но лучше и почти без металла
+вывод с приемной платы
+> voice
+voice: rec=26657 sent=0 txdrop=0 recv=190 lost=0 played=7600 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off | rx err ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=26658 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeB rx-isr: calls=224 max=86us avg=47us long(>250us)=0
+probeC offload: qover=0 qdepth=16 loop_max=25105us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+codec2: mode=700C frame=40ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=11870us avg=8964us (n=190)
+--
+
+7. Коротко Lab04
+Прогнал коротко в обе стороны, звук идет, почему-то именно в этой лабе сильно сработала акустическая связь между подключенными колонками и микрофоном, хотя колонки повернуты тылом. В других лабах нет такой сильной связи, как в Лаб04.4
+Вывод с обеих плат
+> voice
+voice: rec=51890 sent=876 txdrop=0 recv=931 lost=0 played=4655 under=1 over=0
+voice: jb_fill=0/2048 samples (0 ms), ptt=off tone=off, est one-way latency ~27 ms
+voice: rx errors ore=0 fe=0 pe=0 ne=0
+probeA out-rearm: calls=51889 over(>1031us)=0 max=1000us first=0s last=0s
+> stat
+link: baud=921600 bytes tx=146300 rx=155460 | err ore=0 fe=0 pe=0 ne=0
+---
+voice: rec=86340 sent=931 txdrop=0 recv=876 lost=0 played=4380 under=3 over=0
+voice: jb_fill=0/2048 samples (0 ms), ptt=off tone=off, est one-way latency ~27 ms
+voice: rx errors ore=0 fe=480 pe=0 ne=0
+probeA out-rearm: calls=86340 over(>1031us)=0 max=1000us first=0s last=0s
+> stat
+link: baud=921600 bytes tx=155460 rx=146300 | err ore=0 fe=480 pe=0 ne=0
+
+========
+LAB09 UWB DWM3000
+========
+> uwbstat
+uwbstat: tx=3071 rx=3065 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+> voice
+voice: rec=251883 sent=3071 txdrop=0 recv=3065 lost=0 played=61300 under=8 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=3071 rx=3065 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=2
+probeA out-rearm: calls=251882 over(>1031us)=1 max=26544296us first=18s last=18s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=26549275us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=144 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13099us avg=12600us (n=3071) | dec max=11004us avg=9082us (n=3065)
+----------
+> uwbstat
+uwbstat: tx=2753 rx=3068 crcErr=0 phrErr=1 rxTimeout=2 | inited=1 rx=off
+> voice
+voice: rec=255722 sent=2753 txdrop=312 recv=3068 lost=3 played=61420 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=2753 rx=3068 lostSeq=3 crcErr=0 phrErr=1 rxTimeout=2 switch=2
+probeA out-rearm: calls=255721 over(>1031us)=1 max=22170296us first=22s last=22s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=22174952us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=838 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=52 | enc max=13608us avg=12634us (n=3065) | dec max=10931us avg=9176us (n=3068)
+=========
+Повторение тестов.
+1) минута речи с платы A,  voice и uwbstat с обеих
+
+> voice
+voice: rec=132487 sent=3038 txdrop=0 recv=0 lost=0 played=0 under=0 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=3038 rx=0 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=1
+probeA out-rearm: calls=132487 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=14501us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=4111 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13082us avg=12529us (n=3038) | dec max=0us avg=0us (n=0)
+> uwbstat
+uwbstat: tx=3038 rx=0 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+-----------
+> voice
+voice: rec=147648 sent=0 txdrop=0 recv=0 lost=0 played=0 under=0 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=0 rx=0 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=0
+probeA out-rearm: calls=147649 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=179us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=0us avg=0us (n=0)
+> uwbstat
+uwbstat: tx=0 rx=0 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+
+----------------
+2) минута речи с платы A,  voice и uwbstat с обеих
+> voice
+voice: rec=83652 sent=0 txdrop=0 recv=3076 lost=1 played=61540 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=0 rx=3076 lostSeq=1 crcErr=0 phrErr=0 rxTimeout=1 switch=0
+probeA out-rearm: calls=83652 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=11759us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=10993us avg=9182us (n=3076)
+> uwbstat
+uwbstat: tx=0 rx=3076 crcErr=0 phrErr=0 rxTimeout=1 | inited=1 rx=off
+--------
+> voice
+voice: rec=104454 sent=3077 txdrop=0 recv=0 lost=0 played=0 under=0 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=3077 rx=0 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=1
+probeA out-rearm: calls=104455 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=14498us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=2237 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13077us avg=12586us (n=3077) | dec max=0us avg=0us (n=0)
+> uwbstat
+uwbstat: tx=3077 rx=0 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+----------------
+3) на обеих prefill 30 и reset, минута в одну сторону, voice на обеих платах
+(качество на приеме сильно хуже, много искажений)
+
+> voice
+voice: rec=94580 sent=3338 txdrop=0 recv=0 lost=0 played=0 under=0 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=30 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=3338 rx=0 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=1
+probeA out-rearm: calls=94580 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=14615us
+headroom: atten=6dB gainQ8=128 | pre peak=32768 nearFS=2639 | post peak=16384 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=13093us avg=12606us (n=3338) | dec max=0us avg=0us (n=0)
+> uwbstat
+uwbstat: tx=3338 rx=0 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+
+-------------
+> voice
+voice: rec=109174 sent=0 txdrop=0 recv=3338 lost=0 played=66760 under=1 over=0
+voice: codec=codec2 rate=8000 Hz decim=fir jb_fill=0 (0 ms) prefill=60 ms cap=256 ms ptt=off tone=off
+radio: inited=1 tx=0 rx=3338 lostSeq=0 crcErr=0 phrErr=0 rxTimeout=0 switch=0
+probeA out-rearm: calls=109174 over(>1031us)=0 max=1000us first=0s last=0s lastmin=0
+probeC offload: qover=0 qdepth=16 loop_max=11751us
+headroom: atten=6dB gainQ8=128 | pre peak=0 nearFS=0 | post peak=0 nearFS=0 (thr=32000)
+codec2: mode=3200 frame=20ms ring_over=0 | enc max=0us avg=0us (n=0) | dec max=10987us avg=9133us (n=3338)
+> uwbstat
+uwbstat: tx=0 rx=3338 crcErr=0 phrErr=0 rxTimeout=0 | inited=1 rx=off
+
+
+
+
+
+
