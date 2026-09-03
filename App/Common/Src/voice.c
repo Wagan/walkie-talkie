@@ -1443,8 +1443,14 @@ uint8_t Voice_Init(const VoiceConfig *cfg, const console_cmd_t *cmds, uint16_t n
   UartPort_Init();
   UartPort_SetRxTap(voice_rx_byte);
 #endif
-  /* Транспорт LAB09 (радио UWB) поднимает адаптер: SPI4 + сброс модуля до Voice_Init; полная
-   * инициализация DW3000 — командой uwbinit. Здесь ставить нечего (кроме аудио/вытеснения). */
+  /* Транспорт LAB09 (радио UWB): SPI4 + сброс модуля подняты адаптером до Voice_Init. Полную
+   * инициализацию DW3000 запускаем ЗДЕСЬ автоматически (полевой режим, TASK_lab09_autoinit2) —
+   * ДО Audio_Init: блокирующие выдержки (сброс RSTn, ожидание IDLE_RC, ~16.7 мс) не задевают
+   * дедлайн пере-взвода аудиовыхода (1031 мкс). Консоль уже поднята (Console_Init выше), поэтому
+   * ход печатается как у ручного uwbinit. Ручной uwbinit остаётся доступен. */
+#if VOICE_XPORT_UWB
+  Dw3000Port_AutoInit();
+#endif
 
   if (Audio_Init() != 0u)
   {
@@ -1545,6 +1551,7 @@ void Voice_Process(void)
     BSP_LED_Off(LED4);
     g_rxLedOn = 0u;
   }
+  Dw3000Port_FailBlinkPoll();   /* автозапуск не удался -> редкое мигание LED5 (красный), неблокирующе */
 #endif
   if (Console_IsConfigured() != 0u)
   {

@@ -30,6 +30,7 @@
 #include "deca_interface.h"
 #include "trace_log.h"
 #include "voice.h"          /* Voice_IsPtt(): взводить приёмник в конце uwbinit, если не держим PTT */
+#include "stm32f411e_discovery.h"  /* BSP_LED_* : LED4 готовность, LED5 отказ автозапуска */
 #include <string.h>
 #include <stdlib.h>
 
@@ -214,6 +215,17 @@ static uint8_t  s_inited   = 0u;
 static uint8_t  s_rx_active = 0u;
 static uint8_t  s_tx_seq   = 0u;
 
+/* Автозапуск радио при старте (полевой режим, TASK_lab09_autoinit2). Значения — предложение,
+ * к утверждению владельцем; меняются одной строкой каждое. Индикация без консоли (LED по решению
+ * владельца): готовность — вспышки LED4 (зелёный), отказ — редкое мигание LED5 (красный). */
+#define AUTOINIT_TRIES     3u     /* попыток uwbinit при холодном старте (процедура начинается со сброса -> повтор безопасен) */
+#define AUTOINIT_RETRY_MS  200u   /* пауза между попытками, мс */
+#define READY_FLASH_N      3u     /* число вспышек готовности */
+#define READY_FLASH_MS     100u   /* длительность вспышки/паузы готовности, мс */
+#define FAIL_BLINK_MS      500u   /* полупериод мигания отказа, мс (~1 Гц) */
+
+static uint8_t  s_autoFail = 0u;  /* автозапуск исчерпал попытки: мигать LED5 из главного цикла */
+
 /* Счётчики. */
 static uint32_t cnt_tx = 0u, cnt_rx = 0u, cnt_crc = 0u, cnt_phe = 0u, cnt_to = 0u;
 static uint32_t cnt_switch = 0u;    /* переключений TX->RX (реальный разворот полудуплекса) */
@@ -308,9 +320,82 @@ static int radio_init(void)
   if (s_rx_active != 0u) { rx_arm(); }
   else if (Voice_IsPtt() == 0u) { rx_arm(); s_rx_armed = 1u; cnt_armed++; }  /* первичный взвод: не TX->RX */
 
+  /* Успешная инициализация (авто или ручная) снимает мигание отказа автозапуска. Гасим LED5 только
+   * если сами его зажигали — иначе затёрли бы индикацию ошибки аудио (LED5 общий, Audio_OnError). */
+  if (s_autoFail != 0u) { s_autoFail = 0u; BSP_LED_Off(LED5); }
+
   Console_Printf("uwbinit: DONE - chan=%u rate=%s plen=128 pac=8 code=9 (PRF64) sfd=DW8\r\n",
                  (unsigned)s_cfg.chan, rate_str());
   return 0;
+}
+
+/* ---- Автозапуск радио при старте (полевой режим, без консоли) ---- */
+
+/* Серия вспышек готовности на LED4 (зелёный). Зовётся ДО старта аудио, поэтому блокирующая
+ * HAL_Delay безопасна (дедлайна аудиовыхода ещё нет). После серии LED4 погашен — далее он штатно
+ * работает индикатором приёма. */
+static void ready_flash(void)
+{
+  uint8_t i;
+  for (i = 0u; i < READY_FLASH_N; i++)
+  {
+    BSP_LED_On(LED4);  HAL_Delay(READY_FLASH_MS);
+    BSP_LED_Off(LED4); HAL_Delay(READY_FLASH_MS);
+  }
+}
+
+/* Автоматически поднять радио при старте: та же процедура, что uwbinit, до AUTOINIT_TRIES попыток
+ * с паузой AUTOINIT_RETRY_MS. Приёмник взводится внутри radio_init (если не держим PTT) -> первичный
+ * взвод идёт в armed (не switch). Ход печатается в консоль как у ручного вызова. Вызывается из
+ * Voice_Init ДО Audio_Init: блокирующие выдержки (сброс/IDLE_RC) не задевают дедлайн аудиовыхода. */
+void Dw3000Port_AutoInit(void)
+{
+  uint8_t attempt;
+  int rc = -1;
+
+  Console_Write("\r\nuwb autoinit: bringing up radio (field mode)...\r\n");
+  Console_Flush();
+  for (attempt = 0u; attempt < AUTOINIT_TRIES; attempt++)
+  {
+    Console_Printf("uwb autoinit: attempt %u/%u\r\n", (unsigned)(attempt + 1u), (unsigned)AUTOINIT_TRIES);
+    Console_Flush();
+    rc = radio_init();
+    if (rc == 0) { break; }
+    if ((uint8_t)(attempt + 1u) < AUTOINIT_TRIES) { HAL_Delay(AUTOINIT_RETRY_MS); }
+  }
+
+  if (rc == 0)
+  {
+    s_autoFail = 0u;
+    Console_Write("uwb autoinit: OK - receiver armed, ready.\r\n");
+    ready_flash();                 /* готовность: вспышки LED4 (зелёный), до старта аудио */
+  }
+  else
+  {
+    s_autoFail = 1u;               /* отказ: редкое мигание LED5 (красный) из главного цикла */
+    BSP_LED_Off(LED4);
+    Console_Write("uwb autoinit: FAILED after all attempts - red LED blinking. Try 'uwbinit'.\r\n");
+  }
+  Console_Flush();
+}
+
+/* Мигание индикатора отказа автозапуска (LED5, красный, ~1 Гц) из главного цикла. Без блокировок,
+ * по HAL_GetTick. Ничего не делает, пока s_autoFail==0 (LED5 тогда за Audio_OnError). Успешный
+ * ручной uwbinit снимает s_autoFail и гасит LED5 (см. radio_init). */
+void Dw3000Port_FailBlinkPoll(void)
+{
+  static uint32_t last = 0u;
+  static uint8_t  on   = 0u;
+  uint32_t now;
+
+  if (s_autoFail == 0u) { return; }
+  now = HAL_GetTick();
+  if ((uint32_t)(now - last) >= FAIL_BLINK_MS)
+  {
+    last = now;
+    on = (uint8_t)(on == 0u);
+    if (on != 0u) { BSP_LED_On(LED5); } else { BSP_LED_Off(LED5); }
+  }
 }
 
 /* ---- Команды ---- */

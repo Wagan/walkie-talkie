@@ -40,6 +40,10 @@ uint8_t Dw3000Port_ReadDevId(uint32_t *out);
 const console_cmd_t *Dw3000Port_Cmds(uint16_t *count);   /* набор команд uwbinit/uwbcfg/... */
 void Dw3000Port_Poll(void);                              /* опрос приёма (из Lab_Process) */
 
+/* --- Автозапуск радио при старте (полевой режим, TASK_lab09_autoinit2) --- */
+void Dw3000Port_AutoInit(void);        /* поднять радио автоматически (зовётся из Voice_Init до аудио) */
+void Dw3000Port_FailBlinkPoll(void);   /* мигание LED5 при неудаче автозапуска (из главного цикла) */
+
 /* --- Транспорт для голосового движка (voice.c, VOICE_XPORT_UWB): «отдать кадр / принять кадр» --- */
 uint8_t Dw3000Port_IsInited(void);                       /* 1, если uwbinit прошёл */
 uint8_t Dw3000Port_VoiceTx(const uint8_t *payload, uint16_t len);  /* 0 = TXFRS подтверждён, иначе 1 */
