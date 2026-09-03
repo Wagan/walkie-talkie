@@ -43,10 +43,18 @@ extern SPI_HandleTypeDef hspi4;
 extern const struct dwt_driver_s dw3000_driver;
 
 /* ================= Задержки ================= */
+/* Включить счётчик тактов DWT для мкс-задержек драйвера (deca_usleep). CYCCNT здесь НЕ обнуляем:
+ * это ОБЩИЙ на весь проект свободнобегущий счётчик, его читают probeA (audio.c), loop_max/enc/dec
+ * (voice.c), мкс-задержки и разворот RS-485 (uart_port.c), c2load. Функция зовётся не только на
+ * старте, но и на КАЖДОМ uwbinit (через Dw3000Port_Probe при s_probed=0). Обнуление в середине
+ * прогона делало висящую беззнаковую разность `now - prev` заворотом почти на полный оборот
+ * (~44.7 с при 96 МГц) -> probeA max и loop_max показывали десятки секунд (дефект A,
+ * TASK_lab09_diag_fixes §2). deca_usleep пользуется ОТНОСИТЕЛЬНОЙ разностью (CYCCNT - start),
+ * которая переживает заворот сама и не зависит от абсолютного значения, поэтому обнуление не нужно.
+ * Однократное включение+обнуление на старте делает Voice_Init (voice.c). |= идемпотентно. */
 static void dwt_delay_init(void)
 {
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0u;
   DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
@@ -208,7 +216,8 @@ static uint8_t  s_tx_seq   = 0u;
 
 /* Счётчики. */
 static uint32_t cnt_tx = 0u, cnt_rx = 0u, cnt_crc = 0u, cnt_phe = 0u, cnt_to = 0u;
-static uint32_t cnt_switch = 0u;    /* переключений TX->RX (взводов приёмника) */
+static uint32_t cnt_switch = 0u;    /* переключений TX->RX (реальный разворот полудуплекса) */
+static uint32_t cnt_armed  = 0u;    /* первичных взводов приёмника (конец uwbinit; НЕ TX->RX) */
 static uint8_t  s_rx_armed = 0u;    /* приёмник взведён (для голосового опроса) */
 
 /* Тест-кадр: маркер "WT" + порядковый номер + заполнение 0xA5. */
@@ -297,7 +306,7 @@ static int radio_init(void)
    * (режим передачи приоритетнее — там взвод произойдёт штатно на отпускании PTT). Самовзвод в
    * Dw3000Port_VoicePoll остаётся страховкой. */
   if (s_rx_active != 0u) { rx_arm(); }
-  else if (Voice_IsPtt() == 0u) { rx_arm(); s_rx_armed = 1u; cnt_switch++; }
+  else if (Voice_IsPtt() == 0u) { rx_arm(); s_rx_armed = 1u; cnt_armed++; }  /* первичный взвод: не TX->RX */
 
   Console_Printf("uwbinit: DONE - chan=%u rate=%s plen=128 pac=8 code=9 (PRF64) sfd=DW8\r\n",
                  (unsigned)s_cfg.chan, rate_str());
@@ -407,10 +416,11 @@ static void cmd_uwbstat(int argc, char **argv)
     Console_Write("uwbstat: counters reset\r\n");
     return;
   }
-  Console_Printf("uwbstat: tx=%lu rx=%lu crcErr=%lu phrErr=%lu rxTimeout=%lu | inited=%u rx=%s\r\n",
+  Console_Printf("uwbstat: tx=%lu rx=%lu crcErr=%lu phrErr=%lu rxTimeout=%lu | inited=%u rxState=%s armed=%lu switch=%lu\r\n",
                  (unsigned long)cnt_tx, (unsigned long)cnt_rx, (unsigned long)cnt_crc,
                  (unsigned long)cnt_phe, (unsigned long)cnt_to,
-                 (unsigned)s_inited, (s_rx_active != 0u) ? "on" : "off");
+                 (unsigned)s_inited, Dw3000Port_RxStateStr(),
+                 (unsigned long)cnt_armed, (unsigned long)cnt_switch);
 }
 
 static const console_cmd_t s_cmds[] =
@@ -561,8 +571,21 @@ void Dw3000Port_GetVoiceStats(uint32_t *tx, uint32_t *rx, uint32_t *crc,
 
 void Dw3000Port_ResetVoiceStats(void)
 {
-  cnt_tx = 0u; cnt_rx = 0u; cnt_crc = 0u; cnt_phe = 0u; cnt_to = 0u; cnt_switch = 0u;
+  cnt_tx = 0u; cnt_rx = 0u; cnt_crc = 0u; cnt_phe = 0u; cnt_to = 0u; cnt_switch = 0u; cnt_armed = 0u;
 }
+
+/* Единый источник состояния приёмника (дефект B): и uwbstat, и строка radio:/link: в voice
+ * печатают ровно это, чтобы не расходиться. Диагностический путь (uwbrx on) имеет приоритет над
+ * голосовым при отображении, так как удерживает приёмник явно. Только ASCII. */
+const char *Dw3000Port_RxStateStr(void)
+{
+  if (s_rx_active != 0u) { return "armed(diag)";  }
+  if (s_rx_armed  != 0u) { return "armed(voice)"; }
+  return "off";
+}
+
+/* Число первичных взводов приёмника (конец uwbinit), отдельно от switch (TX->RX). */
+uint32_t Dw3000Port_GetArmedCount(void) { return cnt_armed; }
 
 #endif /* UWB_CHIP_DW3000 */
 #endif /* LAB_ID == 9 */

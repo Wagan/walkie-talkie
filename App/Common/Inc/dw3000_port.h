@@ -49,6 +49,12 @@ void Dw3000Port_GetVoiceStats(uint32_t *tx, uint32_t *rx, uint32_t *crc,
                               uint32_t *phe, uint32_t *to, uint32_t *sw);
 void Dw3000Port_ResetVoiceStats(void);
 
+/* Единый источник состояния приёмника для печати: "off" / "armed(voice)" / "armed(diag)"
+ * (дефект B: uwbstat и строка radio:/link: в voice не должны расходиться). */
+const char *Dw3000Port_RxStateStr(void);
+/* Число первичных взводов приёмника (конец uwbinit), отдельно от switch (TX->RX). */
+uint32_t Dw3000Port_GetArmedCount(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -732,9 +732,10 @@ static void cmd_stat(int argc, char **argv)
   {
     uint32_t tx = 0u, rx = 0u, crc = 0u, phe = 0u, to = 0u, sw = 0u;
     Dw3000Port_GetVoiceStats(&tx, &rx, &crc, &phe, &to, &sw);
-    Console_Printf("link: UWB inited=%u tx=%lu rx=%lu | crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu\r\n",
+    Console_Printf("link: UWB inited=%u tx=%lu rx=%lu | crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu rxState=%s armed=%lu\r\n",
                    (unsigned)Dw3000Port_IsInited(), (unsigned long)tx, (unsigned long)rx,
-                   (unsigned long)crc, (unsigned long)phe, (unsigned long)to, (unsigned long)sw);
+                   (unsigned long)crc, (unsigned long)phe, (unsigned long)to, (unsigned long)sw,
+                   Dw3000Port_RxStateStr(), (unsigned long)Dw3000Port_GetArmedCount());
   }
 #endif
 }
@@ -814,10 +815,11 @@ static void cmd_voice(int argc, char **argv)
   {
     uint32_t tx = 0u, rx = 0u, crc = 0u, phe = 0u, to = 0u, sw = 0u;
     Dw3000Port_GetVoiceStats(&tx, &rx, &crc, &phe, &to, &sw);
-    Console_Printf("radio: inited=%u tx=%lu rx=%lu lostSeq=%lu crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu\r\n",
+    Console_Printf("radio: inited=%u tx=%lu rx=%lu lostSeq=%lu crcErr=%lu phrErr=%lu rxTimeout=%lu switch=%lu rxState=%s armed=%lu\r\n",
                    (unsigned)Dw3000Port_IsInited(), (unsigned long)tx, (unsigned long)rx,
                    (unsigned long)cLost, (unsigned long)crc, (unsigned long)phe,
-                   (unsigned long)to, (unsigned long)sw);
+                   (unsigned long)to, (unsigned long)sw,
+                   Dw3000Port_RxStateStr(), (unsigned long)Dw3000Port_GetArmedCount());
   }
 #endif
   /* Диагностика срыва дедлайна аудио-выхода (TASK_isr_deadline_probe) — отдельными строками. */
